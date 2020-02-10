@@ -1,7 +1,5 @@
-{-# LANGUAGE CPP #-}
+{
 module Language.Java.Parser (
-    parser,
-
     compilationUnit, packageDecl, importDecl, typeDecl,
 
     classDecl, interfaceDecl,
@@ -25,14 +23,7 @@ module Language.Java.Parser (
 
     typeParams, typeParam,
 
-    name, ident,
-
-
-    empty, list, list1, seplist, seplist1, opt, bopt, lopt,
-
-    comma, semiColon, period, colon,
-
-    P
+    name, ident
 
     ) where
 
@@ -40,346 +31,316 @@ import Language.Java.Lexer ( L(..), Token(..), lexer)
 import Language.Java.Syntax
 import Language.Java.Pretty (pretty)
 
-import Text.Parsec hiding ( Empty )
-import Text.Parsec.Pos
+}
 
-import Prelude hiding ( exp, catch, (>>), (>>=) )
-import qualified Prelude as P ( (>>), (>>=) )
-import Data.Maybe ( isJust, catMaybes )
-import Control.Monad ( ap )
+%name compilationUnit CompilationUnit
+%tokentype Token
+%error { parseError }
+%lexer { lexer } { EOF }
+%monad { PM }
 
-#if __GLASGOW_HASKELL__ < 707
-import Control.Applicative ( (<$>), (<$), (<*) )
--- Since I cba to find the instance Monad m => Applicative m declaration.
-(<*>) :: Monad m => m (a -> b) -> m a -> m b
-(<*>) = ap
-infixl 4 <*>
-#else
-import Control.Applicative ( (<$>), (<$), (<*), (<*>) )
-#endif
+%token
 
-type P = Parsec [L Token] ()
+    abstract          { KW_Abstract }
+    '@interface'      { KW_AnnInterface }
+    assert            { KW_Assert }
+    boolean           { KW_Boolean }
+    break             { KW_Break }
+    byte              { KW_Byte }
+    case              { KW_Case }
+    catch             { KW_Catch }
+    default           { KW_Char }
+    class             { KW_Class }
+    const             { KW_Const }
+    continue          { KW_Continue }
+    defualt           { KW_Default }
+    do                { KW_Do }
+    double            { KW_Double }
+    else              { KW_Else }
+    enum              { KW_Enum }
+    extends           { KW_Extends }
+    final             { KW_Final }
+    finally           { KW_Finally }
+    float             { KW_Float }
+    for               { KW_For }
+    goto              { KW_Goto }
+    if                { KW_If }
+    implements        { KW_Implements }
+    import            { KW_Import }
+    instanceof        { KW_Instanceof }
+    int               { KW_Int }
+    interface         { KW_Interface }
+    long              { KW_Long }
+    native            { KW_Native }
+    new               { KW_New }
+    package           { KW_Package }
+    private           { KW_Private }
+    protected         { KW_Protected }
+    public            { KW_Public }
+    return            { KW_Return }
+    short             { KW_Short }
+    static            { KW_Static }
+    strictpf          { KW_Strictfp }
+    super             { KW_Super }
+    switch            { KW_Switch }
+    synchronized      { KW_Synchronized }
+    this              { KW_This }
+    throw             { KW_Throw }
+    throws            { KW_Throws }
+    transient         { KW_Transient }
+    try               { KW_Try }
+    void              { KW_Void }
+    volatile          { KW_Volatile }
+    while             { KW_While }
 
--- A trick to allow >> and >>=, normally infixr 1, to be
--- used inside branches of <|>, which is declared as infixl 1.
--- There are no clashes with other operators of precedence 2.
-(>>) = (P.>>)
-(>>=) = (P.>>=)
-infixr 2 >>, >>=
--- Note also when reading that <$> is infixl 4 and thus has
--- lower precedence than all the others (>>, >>=, and <|>).
+    '('               { OpenParen }
+    ')'               { CloseParen }
+    '['               { OpenSquare }
+    ']'               { CloseSquare }
+    '{'               { OpenCurly }
+    '}'               { CloseCurly }
+    ';'               { SemiColon }
+    ','               { Comma }
+    '.'               { Period }
+    '->'              { LambdaArrow }
+    '::'              { MethodRefSep }
 
-----------------------------------------------------------------------------
--- Top-level parsing
+    -- Literals
+    IntVal            { IntTok $$ }
+    LongVal           { LongTok $$ }
+    DoubleVal         { DoubleTok $$ }
+    FloatVal          { FloatTok $$ }
+    CharVal           { CharTok $$ }
+    StringVal         { StringTok $$ }
+    BoolVal           { BoolTok $$ }
+    null              { NullTok }
 
-parseCompilationUnit :: String -> Either ParseError CompilationUnit
-parseCompilationUnit inp =
-    runParser compilationUnit () "" (lexer inp)
+    -- Identifiers
+    ident             { IdentTok $$ }
 
-parser p = runParser p () "" . lexer
+    -- Operators
+    '='               { Op_Equal }
+    '>'               { Op_GThan }
+    '<'               { Op_LThan }
+    '!'               { Op_Bang }
+    '~'               { Op_Tilde }
+    '?'               { Op_Query }
+    ':'               { Op_Colon }
+    '=='              { Op_Equals }
+    '<='              { Op_LThanE }
+    '>='              { Op_GThanE }
+    '!='              { Op_BangE }
+    '&&'              { Op_AAnd }
+    '||'              { Op_OOr }
+    '++'              { Op_PPlus }
+    '--'              { Op_MMinus }
+    '+'               { Op_Plus }
+    '-'               { Op_Minus }
+    '*'               { Op_Star }
+    '/'               { Op_Slash }
+    '&'               { Op_And }
+    '|'               { Op_Or }
+    '^'               { Op_Caret }
+    '%'               { Op_Percent }
+    '<<'              { Op_LShift }
+    '+='              { Op_PlusE }
+    '-='              { Op_MinusE }
+    '*='              { Op_StarE }
+    '/='              { Op_SlashE }
+    '&='              { Op_AndE }
+    '|='              { Op_OrE }
+    '^='              { Op_CaretE }
+    '%='              { Op_PercentE }
+    '<<='             { Op_LShiftE }
+    '>>='             { Op_RShiftE }
+    '>>>='            { Op_RRShiftE }
+    '@'               { Op_AtSign }
 
---class Parse a where
---  parse :: String -> a
+opt(p) : p { Just $1 }
+       |   { Nothing }
 
-----------------------------------------------------------------------------
--- Packages and compilation units
+braced(p) : '{' p '}' { $2 }
+parens(p) : '(' p ')' { $2 }
+bracketed(p) : '[' p ']' { $2 }
 
-compilationUnit :: P CompilationUnit
-compilationUnit = do
-    mpd <- opt packageDecl
-    ids <- list importDecl
-    tds <- list typeDecl
-    eof
-    return $ CompilationUnit mpd ids (catMaybes tds)
+many(p) : p many(p) { $1 : $2 }
+        |           { [] }
 
-packageDecl :: P PackageDecl
-packageDecl = do
-    tok KW_Package
-    n <- name
-    semiColon
-    return $ PackageDecl n
+many_sep1(p, sep)
+    : p sep many_sep(p, sep) { $1 : $3 }
+    | p                      { [$1] }
 
-importDecl :: P ImportDecl
-importDecl = do
-    tok KW_Import
-    st <- bopt $ tok KW_Static
-    n  <- name
-    ds <- bopt $ period >> tok Op_Star
-    semiColon
-    return $ ImportDecl st n ds
+many_sep(p, sep)
+    : many_sep1(p, sep) { $1 }
+    |                   { [] }
 
-typeDecl :: P (Maybe TypeDecl)
-typeDecl = Just <$> classOrInterfaceDecl <|>
-            const Nothing <$> semiColon
+CompilationUnit
+    : opt(PackageDecl) many(ImportDecl) many_sep(TypeDecl, ';')
+        { CompilationUnit $1 $2 (catMaybes $3) }
 
-----------------------------------------------------------------------------
--- Declarations
+PackageDecl
+    : package ident ';' { PackageDecl $2 }
 
--- Class declarations
+ImportDecl
+    : import opt(static) QualIdent opt('.' '*') ';'
+        { ImportDecl (isJust $2) $3 (isJust $4) }
 
-classOrInterfaceDecl :: P TypeDecl
-classOrInterfaceDecl = do
-    ms <- list modifier
-    de <- (do cd <- classDecl
-              return $ \ms -> ClassTypeDecl (cd ms)) <|>
-          (do id <- annInterfaceDecl <|> interfaceDecl
-              return $ \ms -> InterfaceTypeDecl (id ms))
-    return $ de ms
+QualIdent
+    : many_sep1(ident, '.') { Name $1 }
 
-classDecl :: P (Mod ClassDecl)
-classDecl = normalClassDecl <|> enumClassDecl
+-- Sort this out later, these have set ordering and not all are allowed everywhere
+Modifiers : many(Modifier)
 
-normalClassDecl :: P (Mod ClassDecl)
-normalClassDecl = do
-    tok KW_Class
-    i   <- ident
-    tps <- lopt typeParams
-    mex <- opt extends
-    imp <- lopt implements
-    bod <- classBody
-    return $ \ms -> ClassDecl ms i tps ((fmap head) mex) imp bod
+Modifier
+    : abstract        { Public }
+    | static          { Protected }
+    | final           { Final }
+    | transient       { Transient }
+    | synchronized    { Synchronized_ }
+    | public          { Public }
+    | private         { Private }
+    | protected       { Protected }
+    | native          { Native }
+    | strictfp        { StrictFP }
+    | volatile        { Volatile }
+    | Anntoation      { Annotation $$ }
 
-extends :: P [RefType]
-extends = tok KW_Extends >> refTypeList
+TypeDecl
+    : Modifiers TypeDecl { $2 $1 }
 
-implements :: P [RefType]
-implements = tok KW_Implements >> refTypeList
+TypeDecl'
+    : NormalClassDecl { $1 }
+    | EnumClassDecl   { $1 }
+    | InterfaceDecl   { $1 }
 
-enumClassDecl :: P (Mod ClassDecl)
-enumClassDecl = do
-    tok KW_Enum
-    i   <- ident
-    imp <- lopt implements
-    bod <- enumBody
-    return $ \ms -> EnumDecl ms i imp bod
+NormalClassDecl
+    : class ident TypeParams opt(Extends) opt(Implements) braced(many(ClassBodyDecl))
+         { \ms -> ClassDecl ms $2 $3 $4 $5 $6 }
 
-classBody :: P ClassBody
-classBody = ClassBody <$> braces classBodyStatements
+Extends
+    : extends ClassType { $2 }
 
-enumBody :: P EnumBody
-enumBody = braces $ do
-    ecs <- seplist enumConst comma
-    optional comma
-    eds <- lopt enumBodyDecls
-    return $ EnumBody ecs eds
+Implements
+    : implements many_sep1(ClassType, ',') { $2 }
 
-enumConst :: P EnumConstant
-enumConst = do
-    id  <- ident
-    as  <- lopt args
-    mcb <- opt classBody
-    return $ EnumConstant id as mcb
-
-enumBodyDecls :: P [Decl]
-enumBodyDecls = semiColon >> classBodyStatements
-
-classBodyStatements :: P [Decl]
-classBodyStatements = catMaybes <$> list classBodyStatement
-
--- Interface declarations
-
-annInterfaceDecl :: P (Mod InterfaceDecl)
-annInterfaceDecl = do
-    tok KW_AnnInterface
-    id  <- ident
-    tps <- lopt typeParams
-    exs <- lopt extends
-    bod <- interfaceBody
-    return $ \ms -> InterfaceDecl InterfaceAnnotation ms id tps exs bod
-
-interfaceDecl :: P (Mod InterfaceDecl)
-interfaceDecl = do
-    tok KW_Interface
-    id  <- ident
-    tps <- lopt typeParams
-    exs <- lopt extends
-    bod <- interfaceBody
-    return $ \ms -> InterfaceDecl InterfaceNormal ms id tps exs bod
-
-interfaceBody :: P InterfaceBody
-interfaceBody = InterfaceBody . catMaybes <$>
-    braces (list interfaceBodyDecl)
-
--- Declarations
-
-classBodyStatement :: P (Maybe Decl)
-classBodyStatement =
-    (try $ do
-       list1 semiColon
-       return Nothing) <|>
-    (try $ do
-       mst <- bopt (tok KW_Static)
-       blk <- block
-       return $ Just $ InitDecl mst blk) <|>
-    (do ms  <- list modifier
-        dec <- memberDecl
-        return $ Just $ MemberDecl (dec ms))
-
-memberDecl :: P (Mod MemberDecl)
-memberDecl =
-    (try $ do
-        cd  <- classDecl
-        return $ \ms -> MemberClassDecl (cd ms)) <|>
-    (try $ do
-        id  <- try annInterfaceDecl <|> try interfaceDecl
-        return $ \ms -> MemberInterfaceDecl (id ms)) <|>
-
-    try fieldDecl <|>
-    try methodDecl <|>
-    constrDecl
-
-fieldDecl :: P (Mod MemberDecl)
-fieldDecl = endSemi $ do
-    typ <- ttype
-    vds <- varDecls
-    return $ \ms -> FieldDecl ms typ vds
-
-methodDecl :: P (Mod MemberDecl)
-methodDecl = do
-    tps <- lopt typeParams
-    rt  <- resultType
-    id  <- ident
-    fps <- formalParams
-    thr <- lopt throws
-    bod <- methodBody
-    return $ \ms -> MethodDecl ms tps rt id fps thr Nothing bod
-
-methodBody :: P MethodBody
-methodBody = MethodBody <$>
-    (const Nothing <$> semiColon <|> Just <$> block)
+EnumClassDecl
+    : enum ident opt(Implements) braced(EnumBody)
+        { \ms -> EnumDecl ms $2 $3 $4 }
 
 
-constrDecl :: P (Mod MemberDecl)
-constrDecl = do
-    tps <- lopt typeParams
-    id  <- ident
-    fps <- formalParams
-    thr <- lopt throws
-    bod <- constrBody
-    return $ \ms -> ConstructorDecl ms tps id fps thr bod
+EnumBody
+    : many_sep1(EnumConstant, ',') opt(',') many(ClassBodyDecl)
+        { EnumBody $1 $3 }
 
-constrBody :: P ConstructorBody
-constrBody = braces $ do
-    mec <- opt (try explConstrInv)
-    bss <- list blockStmt
-    return $ ConstructorBody mec bss
+EnumConstant
+    : ident opt(Args) opt(braced(ClassBody)) { EnumConstant $1 $2 $3 }
 
-explConstrInv :: P ExplConstrInv
-explConstrInv = endSemi $
-    (try $ do
-        tas <- lopt refTypeArgs
-        tok KW_This
-        as  <- args
-        return $ ThisInvoke tas as) <|>
-    (try $ do
-        tas <- lopt refTypeArgs
-        tok KW_Super
-        as  <- args
-        return $ SuperInvoke tas as) <|>
-    (do pri <- primary
-        period
-        tas <- lopt refTypeArgs
-        tok KW_Super
-        as  <- args
-        return $ PrimarySuperInvoke pri tas as)
+InterfaceDecl
+    : Interface ident TypeParams opt(Extends) many(InterfaceBodyDecl)
+        { \ms -> InterfaceDecl $0 ms $2 $3 $4 (InterfaceBody $5) }
 
--- TODO: This should be parsed like class bodies, and post-checked.
---       That would give far better error messages.
-interfaceBodyDecl :: P (Maybe MemberDecl)
-interfaceBodyDecl = semiColon >> return Nothing <|>
-    do ms  <- list modifier
-       imd <- interfaceMemberDecl
-       return $ Just (imd ms)
+Interface
+    : '@interface' { InterfaceAnnotation }
+    | interface    { InterfaceNormal }
 
-interfaceMemberDecl :: P (Mod MemberDecl)
-interfaceMemberDecl =
-    (do cd  <- classDecl
-        return $ \ms -> MemberClassDecl (cd ms)) <|>
-    (do id  <- try annInterfaceDecl <|> try interfaceDecl
-        return $ \ms -> MemberInterfaceDecl (id ms)) <|>
-    try fieldDecl <|>
-    absMethodDecl
+ClassBodyDecl
+    : Modifiers ClassMemberDecl { MemberDecl ($2 $1) }
+    | opt(static) Block         { InitDecl (isJust $1) $2 }
+    | ConstructorDeclaration    { $1 }
 
-absMethodDecl :: P (Mod MemberDecl)
-absMethodDecl = do
-    tps <- lopt typeParams
-    rt  <- resultType
-    id  <- ident
-    fps <- formalParams
-    thr <- lopt throws
-    def <- opt defaultValue
-    semiColon
-    return $ \ms -> MethodDecl ms tps rt id fps thr def (MethodBody Nothing)
+ClassMemberDeclaration
+    : FieldDecl        { $1 }
+    | MethodDeclaraion { $1 }
+    | ClassDecl        { \ms -> MemberClassDecl ($1 ms) }
+    | InterfaceDecl    { \ms -> MemberInterfaceDecl ($1 ms) }
 
-defaultValue :: P Exp
-defaultValue = tok KW_Default >> exp
+FieldDecl
+    : Type VarDecls ';' { \ms -> FieldDecl ms $1 $2 }
 
-throws :: P [RefType]
-throws = tok KW_Throws >> refTypeList
+TypeParams
+    : '<' many_sep(TypeParam, ',') '>' { $2 }
 
--- Formal parameters
+TypeParam
+    : ident opt(Bounds) { $2 }
 
-formalParams :: P [FormalParam]
-formalParams = parens $ do
-    fps <- seplist formalParam comma
-    if validateFPs fps
-     then return fps
-     else fail "Only the last formal parameter may be of variable arity"
-  where validateFPs :: [FormalParam] -> Bool
-        validateFPs [] = True
-        validateFPs [_] = True
-        validateFPs (FormalParam _ _ b _ :xs) = not b
+Bounds
+    : extends many_sep1(RefType, '&') { $2 }
 
-formalParam :: P FormalParam
-formalParam = do
-    ms  <- list modifier
-    typ <- ttype
-    var <- bopt ellipsis
-    vid <- varDeclId
-    return $ FormalParam ms typ var vid
+MethodDecl
+    : opt(TypeParams) ResultType ident FormalParams opt(ThrowDecl) MethodBody
+        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 Nothing $6 }
 
-ellipsis :: P ()
-ellipsis = period >> period >> period
+MethodBody
+    : ';' { Nothing }
+    | Block { $1 }
 
--- Modifiers
+ConstrDecl
+    : opt(TypeParams) ident FormalParams opt(ThrowDecl) ConstrBody
+        { \ms -> ConstructorDecl ms $1 $2 $3 $4 $5 }
 
-modifier :: P Modifier
-modifier =
-        tok KW_Public      >> return Public
-    <|> tok KW_Protected   >> return Protected
-    <|> tok KW_Private     >> return Private
-    <|> tok KW_Abstract    >> return Abstract
-    <|> tok KW_Static      >> return Static
-    <|> tok KW_Strictfp    >> return StrictFP
-    <|> tok KW_Final       >> return Final
-    <|> tok KW_Native      >> return Native
-    <|> tok KW_Transient   >> return Transient
-    <|> tok KW_Volatile    >> return Volatile
-    <|> tok KW_Synchronized >> return Synchronized_
-    <|> Annotation <$> annotation
+ConstrBody
+    : opt(ExplConstrInv) braced(many(BlockStmt))
+        { ConstructorBody $1 $2 }
 
-annotation :: P Annotation
-annotation = flip ($) <$ tok Op_AtSign <*> name <*> (
-               try (flip NormalAnnotation <$> parens evlist)
-           <|> try (flip SingleElementAnnotation <$> parens elementValue)
-           <|> try (MarkerAnnotation <$ return ())
-        )
+ExplConstrInv
+    : Primary '.' opt(RefTypeArgs) super Args
+        { PrimarySuperInvoke $1 $3 $5 }
+    | RefTypeArgs ConstrInvTarget Args
+        { $2 $1 $3 }
 
-evlist :: P [(Ident, ElementValue)]
-evlist = seplist1 elementValuePair comma
+ConstrInvTarget
+    : super { SuperInvoke }
+    | this  { ThisInvoke }
 
-elementValuePair :: P (Ident, ElementValue)
-elementValuePair = (,) <$> ident <* tok Op_Equal <*> elementValue
+InterfaceBodyDecl
+    : Modifers InterfaceMemberDecl { $2 $1 }
 
-elementValue :: P ElementValue
-elementValue =
-    EVVal <$> (    InitArray <$> arrayInit
-               <|> InitExp   <$> condExp )
-    <|> EVAnn <$> annotation
+InterfaceMemberDecl
+    : ClassDecl     { \ms -> MemberClassDecl ($1 ms) }
+    | InterfaceDecl { \ms -> MemberInterfaceDecl ($1 ms) }
+    | FieldDecl     { $1 }
+    | AbsMethodDec  { $1 }
 
+AbsMethodDecl
+    : opt(TypeParams) ResultType ident FormalParams opt(ThrowDecl) opt(DefaultValue) ';'
+        { \ms -> MethodDecl ms $1 $2 3 $4 $5 $6 }
 
-----------------------------------------------------------------------------
--- Variable declarations
+DefaultValue
+    : default Exp { $2 }
+
+ThrowDecl
+    : throws many_sep(RefTypeList, ',') { $2 }
+
+FormalParams
+    : parens(many_sep(FormalParam, ',')) { validateFPs $1 }
+
+FormalaParam
+    : Modifiers Type opt(Ellipsis) VarDeclId
+        { FormalParam $1 $2 (isJust $3) $4 }
+
+Ellipsis
+    : '.' '.' '.' { () }
+
+Annotation
+    : '@' Name opt(parens(AnnotationArgs))
+        { case $2 of
+              Nothing -> MarkerAnnotation
+              Just (Left args) -> NormalAnnotation args
+              Just (Right val) -> SingleElementAnnotation val
+        }
+
+AnnotationArgs
+    : many_sep(AnnotationArg, ',') { Left $1 }
+    | ElementValue                 { Right $1 }
+
+AnnotationArg
+    : ident '=' ElementVal { ($1, $2) }
+
+ElementVal
+    : ArrayInit  { EVVal (InitArray $1) }
+    | InitExp    { EVVal (InitExp $1) }
+    | Annotation { EVAnn $1 }
+
 
 varDecls :: P [VarDecl]
 varDecls = seplist1 varDecl comma
@@ -801,13 +762,13 @@ lambdaParams = try (LambdaSingleParam <$> ident)
                <|> (parens $ LambdaInferredParams <$> (seplist ident comma))
 
 lambdaExp :: P Exp
-lambdaExp = Lambda 
+lambdaExp = Lambda
             <$> (lambdaParams <* (tok LambdaArrow))
             <*> ((LambdaBlock <$> (try block))
                  <|> (LambdaExpression <$> exp))
 
 methodRef :: P Exp
-methodRef = MethodRef 
+methodRef = MethodRef
             <$> (name <*  (tok MethodRefSep))
             <*> ident
 
@@ -1034,7 +995,7 @@ assignOp =
     (tok Op_OrE      >> return OrA      )
 
 infixCombineOp :: P Op
-infixCombineOp = 
+infixCombineOp =
     (tok Op_And     >> return And       ) <|>
     (tok Op_Caret   >> return Xor       ) <|>
     (tok Op_Or      >> return Or        ) <|>
@@ -1052,17 +1013,17 @@ infixOp =
     (tok Op_LShift  >> return LShift    ) <|>
     (tok Op_LThan   >> return LThan     ) <|>
     (try $ do
-       tok Op_GThan   
-       tok Op_GThan   
+       tok Op_GThan
+       tok Op_GThan
        tok Op_GThan
        return RRShift   ) <|>
-           
+
     (try $ do
-       tok Op_GThan 
+       tok Op_GThan
        tok Op_GThan
        return RShift    ) <|>
-           
-    (tok Op_GThan   >> return GThan     ) <|>                                          
+
+    (tok Op_GThan   >> return GThan     ) <|>
     (tok Op_LThanE  >> return LThanE    ) <|>
     (tok Op_GThanE  >> return GThanE    ) <|>
     (tok Op_Equals  >> return Equal     ) <|>

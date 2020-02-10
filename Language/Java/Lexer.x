@@ -7,7 +7,7 @@ import Numeric
 import Data.Char
 }
 
-%wrapper "posn"
+%wrapper "monad-bytestring"
 
 $digit      = [0-9]
 $nonzero    = [1-9]
