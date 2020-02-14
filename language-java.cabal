@@ -27,6 +27,7 @@ Library
                       , array >= 0.1
                       , pretty >= 1.0
                       , parsec >= 3.0
+                      , template-haskell
 
   if impl(ghc < 7.6)
     Build-Depends:      syb
@@ -39,7 +40,8 @@ Library
                         Language.Java.Pretty
 
   Other-modules:	    Language.Java.Syntax.Types
-                        Language.Java.Syntax.Exp
+                      Language.Java.Syntax.Exp
+                      Language.Java.Syntax.Util
 
 Test-Suite test-java-parse
   type:              exitcode-stdio-1.0
