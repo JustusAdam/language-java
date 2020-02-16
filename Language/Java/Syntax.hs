@@ -43,6 +43,7 @@ module Language.Java.Syntax
     , LambdaExpressionA(..)
     , ArrayInitA(..)
     , MethodInvocationA(..)
+    , MethodRefTarget(..)
      -- ** Unannotated aliases and patterns for backwards compatibility
     , CompilationUnit
     , pattern CompilationUnit
@@ -379,11 +380,15 @@ instance Show a => Show ( ModifierA a) where
    show Synchronized_ = "synchronized"
 
 -- | Annotations have three different forms: no-parameter, single-parameter or key-value pairs
-data AnnotationA a = NormalAnnotation        { annName :: Name -- Not type because not type generics not allowed
-                                            , annKV   :: [(Ident, ElementValueA a)] }
-                  | SingleElementAnnotation { annName :: Name
-                                            , annValue:: ElementValueA a }
-                  | MarkerAnnotation        { annName :: Name }
+data AnnotationA a
+    = NormalAnnotation
+      { annName :: Name -- Not type because not type generics not allowed
+      , annKV   :: [(Ident, ElementValueA a)] }
+    | SingleElementAnnotation
+      { annName :: Name
+      , annValue:: ElementValueA a }
+    | MarkerAnnotation
+      { annName :: Name }
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
 
 type Annotation = AnnotationA ()
@@ -394,8 +399,9 @@ desugarAnnotation (NormalAnnotation n kv)       = (n, kv)
 desugarAnnotation' = uncurry NormalAnnotation . desugarAnnotation
 
 -- | Annotations may contain  annotations or (loosely) expressions
-data ElementValueA a = EVValA (VarInitA a)
-                     | EVAnnA (AnnotationA a)
+data ElementValueA a
+    = EVValA (VarInitA a)
+    | EVAnnA (AnnotationA a)
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
 
 -----------------------------------------------------------------------
@@ -562,8 +568,13 @@ data ExpA a
     -- | Lambda expression
     | LambdaA (LambdaParamsA a) ( LambdaExpressionA a) a
     -- | Method reference
-    | MethodRefA Name (Maybe Ident ) a
+    | MethodRefA MethodRefTarget [TypeArgument] (Maybe Ident ) a
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
+
+data MethodRefTarget
+    = TypeTarget Type
+    | SuperTarget (Maybe Type)
+    deriving (Eq, Show, Read, Typeable, Generic, Data, Typeable)
 
 -- | The left-hand side of an assignment expression. This operand may be a named variable, such as a local
 --   variable or a field of the current object or class, or it may be a computed variable, as can result from
@@ -582,8 +593,8 @@ data ArrayIndexA a = ArrayIndexA (ExpA a) [ExpA a] a    -- ^ Index into an array
 --   of either an expression or the special keyword super.
 data FieldAccessA a
     = PrimaryFieldAccessA ( ExpA a) Ident a     -- ^ Accessing a field of an object or array computed from an expression.
-    | SuperFieldAccessA Ident a            -- ^ Accessing a field of the superclass.
-    | ClassFieldAccessA Name Ident a       -- ^ Accessing a (static) field of a named class.
+    | ClassFieldAccessA (Maybe Name) Ident a
+    | SuperFieldAccessA (Maybe Name) Ident a            -- ^ Accessing a field of the superclass.
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
 
 

@@ -28,6 +28,7 @@ Library
                       , pretty >= 1.0
                       , parsec >= 3.0
                       , template-haskell
+                      , bytestring
 
   if impl(ghc < 7.6)
     Build-Depends:      syb

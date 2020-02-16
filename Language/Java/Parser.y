@@ -1,43 +1,37 @@
 {
+{-# LANGUAGE TupleSections #-}
 module Language.Java.Parser (
-    compilationUnit, packageDecl, importDecl, typeDecl,
-
-    classDecl, interfaceDecl,
-
-    memberDecl, fieldDecl, methodDecl, constrDecl,
-    interfaceMemberDecl, absMethodDecl,
-
-    formalParams, formalParam,
-
-    modifier,
-
-    varDecls, varDecl,
-
-    block, blockStmt, stmt,
-
-    stmtExp, exp, primary, literal,
-
-    ttype, primType, refType, classType, resultType,
-
-    lambdaExp, methodRef,
-
-    typeParams, typeParam,
-
-    name, ident
+    compilationUnit
 
     ) where
 
-import Language.Java.Lexer ( L(..), Token(..), lexer)
+import Language.Java.Lexer ( Alex, getPosition, Token(..), lexer)
 import Language.Java.Syntax
 import Language.Java.Pretty (pretty)
+import Data.Maybe (isJust, fromMaybe)
 
 }
 
 %name compilationUnit CompilationUnit
-%tokentype Token
+%tokentype { Token }
 %error { parseError }
 %lexer { lexer } { EOF }
-%monad { PM }
+%monad { Alex }
+
+%left '->'
+%left '=' '*=' '/=' '%=' '+='  '-='  '<<='  '>>='  '>>>='  '&='  '^='  '|='
+%right '?' ':'
+%left '||'
+%left '&&'
+%left '|'
+%left '^'
+%left '&'
+%left '==' '!='
+%left '<' '>' '<=' '>=' instanceof
+%left '<<' '>>' '>>>'
+%left '+' '-'
+%left '*' '/' '%'
+%left UNARY
 
 %token
 
@@ -49,11 +43,11 @@ import Language.Java.Pretty (pretty)
     byte              { KW_Byte }
     case              { KW_Case }
     catch             { KW_Catch }
-    default           { KW_Char }
+    char              { KW_Char }
     class             { KW_Class }
     const             { KW_Const }
     continue          { KW_Continue }
-    defualt           { KW_Default }
+    default           { KW_Default }
     do                { KW_Do }
     double            { KW_Double }
     else              { KW_Else }
@@ -80,7 +74,7 @@ import Language.Java.Pretty (pretty)
     return            { KW_Return }
     short             { KW_Short }
     static            { KW_Static }
-    strictpf          { KW_Strictfp }
+    strictfp          { KW_Strictfp }
     super             { KW_Super }
     switch            { KW_Switch }
     synchronized      { KW_Synchronized }
@@ -156,43 +150,62 @@ import Language.Java.Pretty (pretty)
     '>>>='            { Op_RRShiftE }
     '@'               { Op_AtSign }
 
+
+%%
+
 opt(p) : p { Just $1 }
        |   { Nothing }
 
-braced(p) : '{' p '}' { $2 }
-parens(p) : '(' p ')' { $2 }
-bracketed(p) : '[' p ']' { $2 }
+or(p1, p2)
+       : p1 { Left $1 }
+       | p2 { Right $1 }
 
-many(p) : p many(p) { $1 : $2 }
+braces(p) : '{' p '}' { $2 }
+parens(p) : '(' p ')' { $2 }
+brackets(p) : '[' p ']' { $2 }
+
+many(p) : many(p) p { $1 : $2 }
         |           { [] }
 
+many1(p)
+    : many(p) p   { $1 : $2 }
+
 many_sep1(p, sep)
-    : p sep many_sep(p, sep) { $1 : $3 }
+    : many_sep(p, sep) sep p { $1 : $3 }
     | p                      { [$1] }
 
 many_sep(p, sep)
     : many_sep1(p, sep) { $1 }
     |                   { [] }
 
+CompilationUnit :: { CompilationUnitA () }
 CompilationUnit
     : opt(PackageDecl) many(ImportDecl) many_sep(TypeDecl, ';')
-        { CompilationUnit $1 $2 (catMaybes $3) }
+        { CompilationUnitA $1 $2 (catMaybes $3) () }
 
-PackageDecl
-    : package ident ';' { PackageDecl $2 }
+PackageDecl :: { PackageDecl }
+PackageDecl : package ExpName ';' { PackageDecl $2 }
 
+WildcardSuffix :: { () }
+WildcardSuffix
+    : '.' '*' { () }
+
+ImportDecl :: { ImportDecl }
 ImportDecl
-    : import opt(static) QualIdent opt('.' '*') ';'
+    : import opt(static) QualIdent opt(WildcardSuffix) ';'
         { ImportDecl (isJust $2) $3 (isJust $4) }
 
+QualIdent :: { Name }
 QualIdent
     : many_sep1(ident, '.') { Name $1 }
 
 -- Sort this out later, these have set ordering and not all are allowed everywhere
-Modifiers : many(Modifier)
+Modifiers :: { [Modifier] }
+Modifiers : many(Modifier) { $1 }
 
+Modifier :: { Modifier }
 Modifier
-    : abstract        { Public }
+    : abstract        { Abstract }
     | static          { Protected }
     | final           { Final }
     | transient       { Transient }
@@ -203,1000 +216,647 @@ Modifier
     | native          { Native }
     | strictfp        { StrictFP }
     | volatile        { Volatile }
-    | Anntoation      { Annotation $$ }
+    | Annotation      { Annotation $$ }
 
+TypeDecl :: { TypeDecl }
 TypeDecl
-    : Modifiers TypeDecl { $2 $1 }
+    : Modifiers TypeDecl0 { $2 $1 }
 
-TypeDecl'
-    : NormalClassDecl { $1 }
-    | EnumClassDecl   { $1 }
+TypeDecl0 :: { [Modifier] -> TypeDecl }
+TypeDecl0
+    : ClassDecl       { $1 }
     | InterfaceDecl   { $1 }
 
+ClassDecl :: { [Modifier] -> TypeDecl }
+ClassDecl
+    : NormalClassDecl { $1 }
+    | EnumClassDecl   { $1 }
+
+NormalClassDecl :: { [Modifier] -> TypeDecl }
 NormalClassDecl
-    : class ident TypeParams opt(Extends) opt(Implements) braced(many(ClassBodyDecl))
+    : class ident OptTypeParams opt(Extends) opt(Implements) ClassBody
          { \ms -> ClassDecl ms $2 $3 $4 $5 $6 }
 
+ClassBody :: { ClassBody }
+ClassBody : braces(many(ClassBodyDecl)) { $1 }
+
+Extends :: { RefType }
 Extends
     : extends ClassType { $2 }
 
+Implements :: { [RefType] }
 Implements
     : implements many_sep1(ClassType, ',') { $2 }
 
+EnumClassDecl :: { ClassDecl }
 EnumClassDecl
-    : enum ident opt(Implements) braced(EnumBody)
+    : enum ident opt(Implements) braces(EnumBody)
         { \ms -> EnumDecl ms $2 $3 $4 }
 
-
+EnumBody :: { EnumBody }
 EnumBody
     : many_sep1(EnumConstant, ',') opt(',') many(ClassBodyDecl)
         { EnumBody $1 $3 }
 
+EnumConstant :: { EnumConstant }
 EnumConstant
-    : ident opt(Args) opt(braced(ClassBody)) { EnumConstant $1 $2 $3 }
+    : ident opt(Args) opt(braces(ClassBody)) { EnumConstant $1 $2 $3 }
 
+InterfaceDecl :: { InterfaceDecl }
 InterfaceDecl
-    : Interface ident TypeParams opt(Extends) many(InterfaceBodyDecl)
+    : Interface ident OptTypeParams opt(Extends) many(InterfaceBodyDecl)
         { \ms -> InterfaceDecl $0 ms $2 $3 $4 (InterfaceBody $5) }
 
+Interface :: { InterfaceKind }
 Interface
     : '@interface' { InterfaceAnnotation }
     | interface    { InterfaceNormal }
 
+ClassBodyDecl :: { Decl }
 ClassBodyDecl
     : Modifiers ClassMemberDecl { MemberDecl ($2 $1) }
     | opt(static) Block         { InitDecl (isJust $1) $2 }
-    | ConstructorDeclaration    { $1 }
+    | ConstructorDecl           { $1 }
 
-ClassMemberDeclaration
+ClassMemberDecl :: { MemberDecl }
+ClassMemberDecl
     : FieldDecl        { $1 }
-    | MethodDeclaraion { $1 }
+    | MethodDecl       { $1 }
     | ClassDecl        { \ms -> MemberClassDecl ($1 ms) }
     | InterfaceDecl    { \ms -> MemberInterfaceDecl ($1 ms) }
 
+FieldDecl :: { MemberDecl }
 FieldDecl
     : Type VarDecls ';' { \ms -> FieldDecl ms $1 $2 }
 
+OptTypeParams :: { [TypeParam] }
+OptTypeParams
+    : opt(TypeParams) { fromMaybe [] $1 }
+
+TypeParams :: { [TypeParam] }
 TypeParams
     : '<' many_sep(TypeParam, ',') '>' { $2 }
 
+TypeParam :: { TypeParam }
 TypeParam
     : ident opt(Bounds) { $2 }
 
+Bounds :: { [Type] }
 Bounds
     : extends many_sep1(RefType, '&') { $2 }
 
-MethodDecl
-    : opt(TypeParams) ResultType ident FormalParams opt(ThrowDecl) MethodBody
-        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 Nothing $6 }
+ExpName :: { Name }
+ExpName
+    : many_sep1(ident,'.') { Name $1 }
 
+MethodDecl :: { MemberDecl }
+MethodDecl
+    : OptTypeParams ResultType ident FormalParams opt(ThrowDecl) MethodBody
+        { \ms -> MethodDecl ms $1 $2 $3 $4 (fromMaybe [] $5 ) Nothing $6 }
+
+ResultType :: { Maybe Type }
+ResultType
+    : void  { Nothing }
+    | Type  { Just $1 }
+
+MethodBody :: { Maybe Block }
 MethodBody
     : ';' { Nothing }
     | Block { $1 }
 
-ConstrDecl
-    : opt(TypeParams) ident FormalParams opt(ThrowDecl) ConstrBody
+ConstructorDecl :: { Decl }
+ConstructorDecl
+    : OptTypeParams ident FormalParams opt(ThrowDecl) ConstrBody
         { \ms -> ConstructorDecl ms $1 $2 $3 $4 $5 }
 
+ConstrBody :: { ConstructorBody }
 ConstrBody
-    : opt(ExplConstrInv) braced(many(BlockStmt))
+    : opt(ExplConstrInv) braces(many(BlockStmt))
         { ConstructorBody $1 $2 }
 
+ExplConstrInv :: { ExplConstrInv }
 ExplConstrInv
     : Primary '.' opt(RefTypeArgs) super Args
-        { PrimarySuperInvoke $1 $3 $5 }
-    | RefTypeArgs ConstrInvTarget Args
-        { $2 $1 $3 }
+        { PrimarySuperInvoke $1 (fromMaybe [] $3 ) $5 }
+    | opt(TypeArgs) ConstrInvTarget Args
+        { $2 (fromMaybe [] $1 ) $3 }
 
+RefTypeArgs :: { [Type] }
+RefTypeArgs
+    : '<' many_sep(Type, ',') '>' { $2 }
+
+ConstrInvTarget :: { [RefType] -> [Argument] -> ExplConstrInv }
 ConstrInvTarget
     : super { SuperInvoke }
     | this  { ThisInvoke }
 
-InterfaceBodyDecl
-    : Modifers InterfaceMemberDecl { $2 $1 }
+TypeArgs :: { [TypeArgument] }
+TypeArgs : '<' many_sep(TypeArg, ',') '>' { $2 }
 
+TypeArg :: { TypeArgument }
+TypeArg
+    : '?' opt(WildcardBound) { Wildcard $2 }
+    | Type                   { ActualType $1 }
+
+WildcardBound :: { WildcardBound }
+WildcardBound
+    : or(extends, super) Type { either (const ExtendsBound) (const SuperBound) $1 $2 }
+
+Args :: { [Exp] }
+Args : parens(many_sep(Exp, ',')) { $1 }
+
+InterfaceBodyDecl :: { MemberDecl }
+InterfaceBodyDecl
+    : Modifiers InterfaceMemberDecl { $2 $1 }
+
+InterfaceMemberDecl :: { [Modifier] -> MemberDecl }
 InterfaceMemberDecl
     : ClassDecl     { \ms -> MemberClassDecl ($1 ms) }
     | InterfaceDecl { \ms -> MemberInterfaceDecl ($1 ms) }
     | FieldDecl     { $1 }
-    | AbsMethodDec  { $1 }
+    | AbsMethodDecl { $1 }
 
+AbsMethodDecl :: { [Modifier] -> MemberDecl }
 AbsMethodDecl
-    : opt(TypeParams) ResultType ident FormalParams opt(ThrowDecl) opt(DefaultValue) ';'
-        { \ms -> MethodDecl ms $1 $2 3 $4 $5 $6 }
+    : OptTypeParams ResultType ident FormalParams opt(ThrowDecl) DefaultValue ';'
+        { \ms -> MethodDecl ms $1 $2 3 $4 $5 (fromMaybe None $6) }
 
+DefaultValue :: { DefaultValue }
 DefaultValue
-    : default Exp { $2 }
+    : default DefaultVal { $2 }
 
+DefaultVal
+    : braces(many_sep(Exp, ',')) { Single $1 }
+    | Exp                        { Array $1 }
+
+ThrowDecl :: { [Type] }
 ThrowDecl
-    : throws many_sep(RefTypeList, ',') { $2 }
+    : throws many_sep(RefType, ',') { $2 }
 
+FormalParams :: { [FormalParam] }
 FormalParams
-    : parens(many_sep(FormalParam, ',')) { validateFPs $1 }
+    : parens(FormalParams0) { $1 }
 
-FormalaParam
-    : Modifiers Type opt(Ellipsis) VarDeclId
-        { FormalParam $1 $2 (isJust $3) $4 }
+FormalParams0 :: { [FormalParam] }
+FormalParams0
+    : FormalParam ',' FormalParams0 { $1 : $3 }
+    | VarArgParam                   { [$1] }
+    | FormalParam                   { [$1] }
 
+VarArgParam :: { FormalParam }
+VarArgParam
+    : many(VarMod) Type Ellipsis VarDeclId
+        { FormalParam $1 $2 True $4 }
+
+FormalParam :: { FormalParam }
+FormalParam
+    : VarMod Type VarDeclId
+        { FormalParam $1 $2 False $3 }
+
+VarMod :: { Modifier }
+VarMod
+    : many(Annotation) final many(Annotation)
+        { map Annotation $1 ++ maybe [] (const [Final]) $2 ++ map Annotation $3 }
+
+Ellipsis :: { () }
 Ellipsis
     : '.' '.' '.' { () }
 
+RefType :: { Type }
+RefType : ClassType { $1 }
+
+Type :: { Type }
+Type
+    : or(ClassType, PrimType) opt(dims(Empty))
+        { (if isJust $2 then RefType . ArrayType else id) $
+             case $1 of
+                 Left e -> RefType $ ClassRefType e
+                 Right e -> PrimType e
+        }
+Empty :: { () }
+Empty : { () }
+
+PrimType :: { PrimType }
+PrimType
+    : boolean { BooleanT }
+    | byte    { ByteT }
+    | short   { ShortT }
+    | int     { IntT }
+    | long    { LongT }
+    | char    { CharT }
+    | float   { FloatT }
+    | double  { DoubleT }
+
+Annotation :: { Annotation }
 Annotation
-    : '@' Name opt(parens(AnnotationArgs))
-        { case $2 of
+    : '@' ExpName opt(parens(AnnotationArgs))
+        { case $3 of
               Nothing -> MarkerAnnotation
-              Just (Left args) -> NormalAnnotation args
-              Just (Right val) -> SingleElementAnnotation val
+              Just (Left args) -> NormalAnnotation $2 args
+              Just (Right val) -> SingleElementAnnotation $2 val
         }
 
+AnnotationArgs :: { Either [(Ident,ElementValue)] ElementValue }
 AnnotationArgs
     : many_sep(AnnotationArg, ',') { Left $1 }
-    | ElementValue                 { Right $1 }
+    | ElementVal                   { Right $1 }
 
+AnnotationArg :: { (Ident, ElementValue) }
 AnnotationArg
     : ident '=' ElementVal { ($1, $2) }
 
+ElementVal :: { ElementValue }
 ElementVal
-    : ArrayInit  { EVVal (InitArray $1) }
-    | InitExp    { EVVal (InitExp $1) }
+    : InitExp    { EVVal $1 }
     | Annotation { EVAnn $1 }
 
+InitExp :: { VarInit }
+InitExp
+    : ArrayInit { InitArray $1 }
+    | Exp       { InitExp $1 }
 
-varDecls :: P [VarDecl]
-varDecls = seplist1 varDecl comma
+ArrayInit :: { [VarInit] }
+ArrayInit
+    : braces(many_sep(VarInit, ',')) { $1 }
 
-varDecl :: P VarDecl
-varDecl = do
-    vid <- varDeclId
-    mvi <- opt $ tok Op_Equal >> varInit
-    return $ VarDecl vid mvi
+VarDecls :: { [VarDecl] }
+VarDecls
+    : many_sep(VarDecl, ',') { $1 }
 
-varDeclId :: P VarDeclId
-varDeclId = do
-    id  <- ident
-    abs <- list arrBrackets
-    return $ foldl (\f _ -> VarDeclArray . f) VarId abs id
+VarDecl :: { VarDecl }
+VarDecl
+    : VarDeclId opt(VarInitAssign) { VarDecl $1 $2 }
 
-arrBrackets :: P ()
-arrBrackets = brackets $ return ()
+VarInitAssign :: { VarInit }
+VarInitAssign
+    : '=' VarInit { $2 }
 
-localVarDecl :: P ([Modifier], Type, [VarDecl])
-localVarDecl = do
-    ms  <- list modifier
-    typ <- ttype
-    vds <- varDecls
-    return (ms, typ, vds)
+VarDeclId :: { VarDecl }
+VarDeclId
+    : ident many(brackets(Empty)) { foldl (\f _ -> VarDeclArray . f) VarId $2 $1 }
 
-varInit :: P VarInit
-varInit =
-    InitArray <$> arrayInit <|>
-    InitExp   <$> exp
+LocalVarDecl :: { (Type, [VarDecl]) }
+LocalVarDecl
+    : Type VarDecls { ($1, $2) }
 
-arrayInit :: P ArrayInit
-arrayInit = braces $ do
-    vis <- seplist varInit comma
-    opt comma
-    return $ ArrayInit vis
+
+VarInit :: { VarInit }
+VarInit
+    : ArrayInit { InitArray $1 }
+    | Exp       { InitExp $1 }
+
 
 ----------------------------------------------------------------------------
 -- Statements
 
-block :: P Block
-block = braces $ Block <$> list blockStmt
-
-blockStmt :: P BlockStmt
-blockStmt =
-    (try $ do
-        ms  <- list modifier
-        cd  <- classDecl
-        return $ LocalClass (cd ms)) <|>
-    (try $ do
-        (m,t,vds) <- endSemi $ localVarDecl
-        return $ LocalVars m t vds) <|>
-    BlockStmt <$> stmt
-
-stmt :: P Stmt
-stmt = ifStmt <|> whileStmt <|> forStmt <|> labeledStmt <|> stmtNoTrail
-  where
-    ifStmt = do
-        tok KW_If
-        e   <- parens exp
-        (try $
-            do th <- stmtNSI
-               tok KW_Else
-               el <- stmt
-               return $ IfThenElse e th el) <|>
-           (do th <- stmt
-               return $ IfThen e th)
-    whileStmt = do
-        tok KW_While
-        e   <- parens exp
-        s   <- stmt
-        return $ While e s
-    forStmt = do
-        tok KW_For
-        f <- parens $
-            (try $ do
-                fi <- opt forInit
-                semiColon
-                e  <- opt exp
-                semiColon
-                fu <- opt forUp
-                return $ BasicFor fi e fu) <|>
-            (do ms <- list modifier
-                t  <- ttype
-                i  <- ident
-                colon
-                e  <- exp
-                return $ EnhancedFor ms t i e)
-        s <- stmt
-        return $ f s
-    labeledStmt = try $ do
-        lbl <- ident
-        colon
-        s   <- stmt
-        return $ Labeled lbl s
-
-stmtNSI :: P Stmt
-stmtNSI = ifStmt <|> whileStmt <|> forStmt <|> labeledStmt <|> stmtNoTrail
-  where
-    ifStmt = do
-        tok KW_If
-        e  <- parens exp
-        th <- stmtNSI
-        tok KW_Else
-        el <- stmtNSI
-        return $ IfThenElse e th el
-    whileStmt = do
-        tok KW_While
-        e <- parens exp
-        s <- stmtNSI
-        return $ While e s
-    forStmt = do
-        tok KW_For
-        f <- parens $ (try $ do
-            fi <- opt forInit
-            semiColon
-            e  <- opt exp
-            semiColon
-            fu <- opt forUp
-            return $ BasicFor fi e fu)
-            <|> (do
-            ms <- list modifier
-            t  <- ttype
-            i  <- ident
-            colon
-            e  <- exp
-            return $ EnhancedFor ms t i e)
-        s <- stmtNSI
-        return $ f s
-    labeledStmt = try $ do
-        i <- ident
-        colon
-        s <- stmtNSI
-        return $ Labeled i s
-
-stmtNoTrail :: P Stmt
-stmtNoTrail =
-    -- empty statement
-    const Empty <$> semiColon <|>
-    -- inner block
-    StmtBlock <$> block <|>
-    -- assertions
-    (endSemi $ do
-        tok KW_Assert
-        e   <- exp
-        me2 <- opt $ colon >> exp
-        return $ Assert e me2) <|>
-    -- switch stmts
-    (do tok KW_Switch
-        e  <- parens exp
-        sb <- switchBlock
-        return $ Switch e sb) <|>
-    -- do-while loops
-    (endSemi $ do
-        tok KW_Do
-        s <- stmt
-        tok KW_While
-        e <- parens exp
-        return $ Do s e) <|>
-    -- break
-    (endSemi $ do
-        tok KW_Break
-        mi <- opt ident
-        return $ Break mi) <|>
-    -- continue
-    (endSemi $ do
-        tok KW_Continue
-        mi <- opt ident
-        return $ Continue mi) <|>
-    -- return
-    (endSemi $ do
-        tok KW_Return
-        me <- opt exp
-        return $ Return me) <|>
-    -- synchronized
-    (do tok KW_Synchronized
-        e <- parens exp
-        b <- block
-        return $ Synchronized e b) <|>
-    -- throw
-    (endSemi $ do
-        tok KW_Throw
-        e <- exp
-        return $ Throw e) <|>
-    -- try-catch, both with and without a finally clause
-    (do tok KW_Try
-        b <- block
-        c <- list catch
-        mf <- opt $ tok KW_Finally >> block
-        -- TODO: here we should check that there exists at
-        -- least one catch or finally clause
-        return $ Try b c mf) <|>
-    -- expressions as stmts
-    ExpStmt <$> endSemi stmtExp
-
--- For loops
-
-forInit :: P ForInit
-forInit = (do
-    try (do (m,t,vds) <- localVarDecl
-            return $ ForLocalVars m t vds)) <|>
-    (seplist1 stmtExp comma >>= return . ForInitExps)
-
-forUp :: P [Exp]
-forUp = seplist1 stmtExp comma
-
--- Switches
-
-switchBlock :: P [SwitchBlock]
-switchBlock = braces $ list switchStmt
-
-switchStmt :: P SwitchBlock
-switchStmt = do
-    lbl <- switchLabel
-    bss <- list blockStmt
-    return $ SwitchBlock lbl bss
-
-switchLabel :: P SwitchLabel
-switchLabel = (tok KW_Default >> colon >> return Default) <|>
-    (do tok KW_Case
-        e <- exp
-        colon
-        return $ SwitchCase e)
-
--- Try-catch clauses
-
-catch :: P Catch
-catch = do
-    tok KW_Catch
-    fp <- parens formalParam
-    b  <- block
-    return $ Catch fp b
-
-----------------------------------------------------------------------------
--- Expressions
-
-stmtExp :: P Exp
-stmtExp = try preIncDec
-    <|> try postIncDec
-    <|> try assignment
-    -- There are sharing gains to be made by unifying these two
-    <|> try methodInvocationExp
-    <|> try lambdaExp
-    <|> try methodRef
-    <|> instanceCreation
-
-preIncDec :: P Exp
-preIncDec = do
-    op <- preIncDecOp
-    e <- unaryExp
-    return $ op e
-
-postIncDec :: P Exp
-postIncDec = do
-    e <- postfixExpNES
-    ops <- list1 postfixOp
-    return $ foldl (\a s -> s a) e ops
-
-assignment :: P Exp
-assignment = do
-    lh <- lhs
-    op <- assignOp
-    e  <- assignExp
-    return $ Assign lh op e
-
-lhs :: P Lhs
-lhs = try (FieldLhs <$> fieldAccess)
-    <|> try (ArrayLhs <$> arrayAccess)
-    <|> NameLhs <$> name
-
-
-
-exp :: P Exp
-exp = assignExp
-
-assignExp :: P Exp
-assignExp = try methodRef <|> try lambdaExp <|> try assignment <|> condExp
-
-condExp :: P Exp
-condExp = do
-    ie <- infixExp
-    ces <- list condExpSuffix
-    return $ foldl (\a s -> s a) ie ces
-
-condExpSuffix :: P (Exp -> Exp)
-condExpSuffix = do
-    tok Op_Query
-    th <- exp
-    colon
-    el <- condExp
-    return $ \ce -> Cond ce th el
-
-infixExp :: P Exp
-infixExp = do
-    ue <- unaryExp
-    ies <- list infixExpSuffix
-    return $ foldl (\a s -> s a) ue ies
-
-infixExpSuffix :: P (Exp -> Exp)
-infixExpSuffix =
-    (do
-      op <- infixCombineOp
-      ie2 <- infixExp
-      return $ \ie1 -> BinOp ie1 op ie2) <|>
-    (do op <- infixOp
-        e2 <- unaryExp
-        return $ \e1 -> BinOp e1 op e2) <|>
-    (do tok KW_Instanceof
-        t  <- refType
-        return $ \e1 -> InstanceOf e1 t)
-
-unaryExp :: P Exp
-unaryExp = try preIncDec <|>
-    try (do
-        op <- prefixOp
-        ue <- unaryExp
-        return $ op ue) <|>
-    try (do
-        t <- parens ttype
-        e <- unaryExp
-        return $ Cast t e) <|>
-    postfixExp
-
-postfixExpNES :: P Exp
-postfixExpNES = -- try postIncDec <|>
-    try primary <|>
-    ExpName <$> name
-
-postfixExp :: P Exp
-postfixExp = do
-    pe <- postfixExpNES
-    ops <- list postfixOp
-    return $ foldl (\a s -> s a) pe ops
-
-
-primary :: P Exp
-primary = primaryNPS |>> primarySuffix
-
-primaryNPS :: P Exp
-primaryNPS = try arrayCreation <|> primaryNoNewArrayNPS
-
-primaryNoNewArray = startSuff primaryNoNewArrayNPS primarySuffix
-
-primaryNoNewArrayNPS :: P Exp
-primaryNoNewArrayNPS =
-    Lit <$> literal <|>
-    const This <$> tok KW_This <|>
-    parens exp <|>
-    -- TODO: These two following should probably be merged more
-    (try $ do
-        rt <- resultType
-        period >> tok KW_Class
-        return $ ClassLit rt) <|>
-    (try $ do
-        n <- name
-        period >> tok KW_This
-        return $ ThisClass n) <|>
-    try instanceCreationNPS <|>
-    try (MethodInv <$> methodInvocationNPS) <|>
-    try (FieldAccess <$> fieldAccessNPS) <|>
-    ArrayAccess <$> arrayAccessNPS
-
-primarySuffix :: P (Exp -> Exp)
-primarySuffix = try instanceCreationSuffix <|>
-    try ((ArrayAccess .) <$> arrayAccessSuffix) <|>
-    try ((MethodInv .) <$> methodInvocationSuffix) <|>
-    (FieldAccess .) <$> fieldAccessSuffix
-
-
-instanceCreationNPS :: P Exp
-instanceCreationNPS =
-    do tok KW_New
-       tas <- lopt typeArgs
-       tds <- typeDeclSpecifier
-       as  <- args
-       mcb <- opt classBody
-       return $ InstanceCreation tas tds as mcb
-
-typeDeclSpecifier :: P TypeDeclSpecifier
-typeDeclSpecifier =
-    (try $ do ct <- classType
-              period
-              i <- ident
-              tok Op_LThan
-              tok Op_GThan
-              return $ TypeDeclSpecifierWithDiamond ct i Diamond
-    ) <|>
-    (try $ do i <- ident
-              tok Op_LThan
-              tok Op_GThan
-              return $ TypeDeclSpecifierUnqualifiedWithDiamond i Diamond
-    ) <|>
-    (do ct <- classType
-        return $ TypeDeclSpecifier ct
-    )
-
-instanceCreationSuffix :: P (Exp -> Exp)
-instanceCreationSuffix =
-     do period >> tok KW_New
-        tas <- lopt typeArgs
-        i   <- ident
-        as  <- args
-        mcb <- opt classBody
-        return $ \p -> QualInstanceCreation p tas i as mcb
-
-instanceCreation :: P Exp
-instanceCreation = try instanceCreationNPS <|> do
-    p <- primaryNPS
-    ss <- list primarySuffix
-    let icp = foldl (\a s -> s a) p ss
-    case icp of
-     QualInstanceCreation {} -> return icp
-     _ -> fail ""
-
-
-lambdaParams :: P LambdaParams
-lambdaParams = try (LambdaSingleParam <$> ident)
-               <|> try (parens $ LambdaFormalParams <$> (seplist formalParam comma))
-               <|> (parens $ LambdaInferredParams <$> (seplist ident comma))
-
-lambdaExp :: P Exp
-lambdaExp = Lambda
-            <$> (lambdaParams <* (tok LambdaArrow))
-            <*> ((LambdaBlock <$> (try block))
-                 <|> (LambdaExpression <$> exp))
-
-methodRef :: P Exp
-methodRef = MethodRef
-            <$> (name <*  (tok MethodRefSep))
-            <*> ident
-
-{-
-instanceCreation =
-    (do tok KW_New
-        tas <- lopt typeArgs
-        ct  <- classType
-        as  <- args
-        mcb <- opt classBody
-        return $ InstanceCreation tas ct as mcb) <|>
-    (do p   <- primary
-        period >> tok KW_New
-        tas <- lopt typeArgs
-        i   <- ident
-        as  <- args
-        mcb <- opt classBody
-        return $ QualInstanceCreation p tas i as mcb)
--}
-
-fieldAccessNPS :: P FieldAccess
-fieldAccessNPS =
-    (do tok KW_Super >> period
-        i <- ident
-        return $ SuperFieldAccess i) <|>
-    (do n <- name
-        period >> tok KW_Super >> period
-        i <- ident
-        return $ ClassFieldAccess n i)
-
-fieldAccessSuffix :: P (Exp -> FieldAccess)
-fieldAccessSuffix = do
-    period
-    i <- ident
-    return $ \p -> PrimaryFieldAccess p i
-
-fieldAccess :: P FieldAccess
-fieldAccess = try fieldAccessNPS <|> do
-    p <- primaryNPS
-    ss <- list primarySuffix
-    let fap = foldl (\a s -> s a) p ss
-    case fap of
-     FieldAccess fa -> return fa
-     _ -> fail ""
-
-{-
-fieldAccess :: P FieldAccess
-fieldAccess = try fieldAccessNPS <|> do
-    p <- primary
-    fs <- fieldAccessSuffix
-    return (fs p)
--}
-
-{-
-fieldAccess :: P FieldAccess
-fieldAccess =
-    (do tok KW_Super >> period
-        i <- ident
-        return $ SuperFieldAccess i) <|>
-    (try $ do
-        n <- name
-        period >> tok KW_Super >> period
-        i <- ident
-        return $ ClassFieldAccess n i) <|>
-    (do p <- primary
-        period
-        i <- ident
-        return $ PrimaryFieldAccess p i)
--}
-
-methodInvocationNPS :: P MethodInvocation
-methodInvocationNPS =
-    (do tok KW_Super >> period
-        rts <- lopt refTypeArgs
-        i   <- ident
-        as  <- args
-        return $ SuperMethodCall rts i as) <|>
-    (do n <- name
-        f <- (do as <- args
-                 return $ \n -> MethodCall n as) <|>
-             (period >> do
-                msp <- opt (tok KW_Super >> period)
-                rts <- lopt refTypeArgs
-                i   <- ident
-                as  <- args
-                let mc = maybe TypeMethodCall (const ClassMethodCall) msp
-                return $ \n -> mc n rts i as)
-        return $ f n)
-
-methodInvocationSuffix :: P (Exp -> MethodInvocation)
-methodInvocationSuffix = do
-        period
-        rts <- lopt refTypeArgs
-        i   <- ident
-        as  <- args
-        return $ \p -> PrimaryMethodCall p [] i as
-
-methodInvocationExp :: P Exp
-methodInvocationExp = try (do
-    p <- primaryNPS
-    ss <- list primarySuffix
-    let mip = foldl (\a s -> s a) p ss
-    case mip of
-     MethodInv _ -> return mip
-     _ -> fail "") <|>
-     (MethodInv <$> methodInvocationNPS)
-
-{-
-methodInvocation :: P MethodInvocation
-methodInvocation =
-    (do tok KW_Super >> period
-        rts <- lopt refTypeArgs
-        i   <- ident
-        as  <- args
-        return $ SuperMethodCall rts i as) <|>
-    (do p <- primary
-        period
-        rts <- lopt refTypeArgs
-        i   <- ident
-        as  <- args
-        return $ PrimaryMethodCall p rts i as) <|>
-    (do n <- name
-        f <- (do as <- args
-                 return $ \n -> MethodCall n as) <|>
-             (period >> do
-                msp <- opt (tok KW_Super >> period)
-                rts <- lopt refTypeArgs
-                i   <- ident
-                as  <- args
-                let mc = maybe TypeMethodCall (const ClassMethodCall) msp
-                return $ \n -> mc n rts i as)
-        return $ f n)
--}
-
-args :: P [Argument]
-args = parens $ seplist exp comma
-
--- Arrays
-
-arrayAccessNPS :: P ArrayIndex
-arrayAccessNPS = do
-    n <- name
-    e <- list1 $ brackets exp
-    return $ ArrayIndex (ExpName n) e
-
-arrayAccessSuffix :: P (Exp -> ArrayIndex)
-arrayAccessSuffix = do
-    e <- list1 $ brackets exp
-    return $ \ref -> ArrayIndex ref e
-
-arrayAccess = try arrayAccessNPS <|> do
-    p <- primaryNoNewArrayNPS
-    ss <- list primarySuffix
-    let aap = foldl (\a s -> s a) p ss
-    case aap of
-     ArrayAccess ain -> return ain
-     _ -> fail ""
-
-{-
-arrayAccess :: P (Exp, Exp)
-arrayAccess = do
-    ref <- arrayRef
-    e   <- brackets exp
-    return (ref, e)
-
-arrayRef :: P Exp
-arrayRef = ExpName <$> name <|> primaryNoNewArray
--}
-
-arrayCreation :: P Exp
-arrayCreation = do
-    tok KW_New
-    t <- nonArrayType
-    f <- (try $ do
-             ds <- list1 $ brackets empty
-             ai <- arrayInit
-             return $ \t -> ArrayCreateInit t (length ds) ai) <|>
-         (do des <- list1 $ try $ brackets exp
-             ds  <- list  $ brackets empty
-             return $ \t -> ArrayCreate t des (length ds))
-    return $ f t
-
-literal :: P Literal
-literal =
-    javaToken $ \t -> case t of
-        IntTok     i -> Just (Int i)
-        LongTok    l -> Just (Word l)
-        DoubleTok  d -> Just (Double d)
-        FloatTok   f -> Just (Float f)
-        CharTok    c -> Just (Char c)
-        StringTok  s -> Just (String s)
-        BoolTok    b -> Just (Boolean b)
-        NullTok      -> Just Null
-        _ -> Nothing
-
--- Operators
-
-preIncDecOp, prefixOp, postfixOp :: P (Exp -> Exp)
-preIncDecOp =
-    (tok Op_PPlus >> return PreIncrement) <|>
-    (tok Op_MMinus >> return PreDecrement)
-prefixOp =
-    (tok Op_Bang  >> return PreNot      ) <|>
-    (tok Op_Tilde >> return PreBitCompl ) <|>
-    (tok Op_Plus  >> return PrePlus     ) <|>
-    (tok Op_Minus >> return PreMinus    )
-postfixOp =
-    (tok Op_PPlus  >> return PostIncrement) <|>
-    (tok Op_MMinus >> return PostDecrement)
-
-assignOp :: P AssignOp
-assignOp =
-    (tok Op_Equal    >> return EqualA   ) <|>
-    (tok Op_StarE    >> return MultA    ) <|>
-    (tok Op_SlashE   >> return DivA     ) <|>
-    (tok Op_PercentE >> return RemA     ) <|>
-    (tok Op_PlusE    >> return AddA     ) <|>
-    (tok Op_MinusE   >> return SubA     ) <|>
-    (tok Op_LShiftE  >> return LShiftA  ) <|>
-    (tok Op_RShiftE  >> return RShiftA  ) <|>
-    (tok Op_RRShiftE >> return RRShiftA ) <|>
-    (tok Op_AndE     >> return AndA     ) <|>
-    (tok Op_CaretE   >> return XorA     ) <|>
-    (tok Op_OrE      >> return OrA      )
-
-infixCombineOp :: P Op
-infixCombineOp =
-    (tok Op_And     >> return And       ) <|>
-    (tok Op_Caret   >> return Xor       ) <|>
-    (tok Op_Or      >> return Or        ) <|>
-    (tok Op_AAnd    >> return CAnd      ) <|>
-    (tok Op_OOr     >> return COr       )
-
-
-infixOp :: P Op
-infixOp =
-    (tok Op_Star    >> return Mult      ) <|>
-    (tok Op_Slash   >> return Div       ) <|>
-    (tok Op_Percent >> return Rem       ) <|>
-    (tok Op_Plus    >> return Add       ) <|>
-    (tok Op_Minus   >> return Sub       ) <|>
-    (tok Op_LShift  >> return LShift    ) <|>
-    (tok Op_LThan   >> return LThan     ) <|>
-    (try $ do
-       tok Op_GThan
-       tok Op_GThan
-       tok Op_GThan
-       return RRShift   ) <|>
-
-    (try $ do
-       tok Op_GThan
-       tok Op_GThan
-       return RShift    ) <|>
-
-    (tok Op_GThan   >> return GThan     ) <|>
-    (tok Op_LThanE  >> return LThanE    ) <|>
-    (tok Op_GThanE  >> return GThanE    ) <|>
-    (tok Op_Equals  >> return Equal     ) <|>
-    (tok Op_BangE   >> return NotEq     )
-
-
-----------------------------------------------------------------------------
--- Types
-
-ttype :: P Type
-ttype = try (RefType <$> refType) <|> PrimType <$> primType
-
-primType :: P PrimType
-primType =
-    tok KW_Boolean >> return BooleanT  <|>
-    tok KW_Byte    >> return ByteT     <|>
-    tok KW_Short   >> return ShortT    <|>
-    tok KW_Int     >> return IntT      <|>
-    tok KW_Long    >> return LongT     <|>
-    tok KW_Char    >> return CharT     <|>
-    tok KW_Float   >> return FloatT    <|>
-    tok KW_Double  >> return DoubleT
-
-refType :: P RefType
-refType =
-    (do pt <- primType
-        (_:bs) <- list1 arrBrackets
-        return $ foldl (\f _ -> ArrayType . RefType . f)
-                        (ArrayType . PrimType) bs pt) <|>
-    (do ct <- classType
-        bs <- list arrBrackets
-        return $ foldl (\f _ -> ArrayType . RefType . f)
-                            ClassRefType bs ct) <?> "refType"
-
-nonArrayType :: P Type
-nonArrayType = PrimType <$> primType <|>
-    RefType <$> ClassRefType <$> classType
-
-classType :: P ClassType
-classType = ClassType <$> seplist1 classTypeSpec period
-
-classTypeSpec :: P (Ident, [TypeArgument])
-classTypeSpec = do
-    i   <- ident
-    tas <- lopt typeArgs
-    return (i, tas)
-
-resultType :: P (Maybe Type)
-resultType = tok KW_Void >> return Nothing <|> Just <$> ttype <?> "resultType"
-
-refTypeList :: P [RefType]
-refTypeList = seplist1 refType comma
-
-----------------------------------------------------------------------------
--- Type parameters and arguments
-
-typeParams :: P [TypeParam]
-typeParams = angles $ seplist1 typeParam comma
-
-typeParam :: P TypeParam
-typeParam = do
-    i  <- ident
-    bs <- lopt bounds
-    return $ TypeParam i bs
-
-bounds :: P [RefType]
-bounds = tok KW_Extends >> seplist1 refType (tok Op_And)
-
-typeArgs :: P [TypeArgument]
-typeArgs = angles $ seplist1 typeArg comma
-
-typeArg :: P TypeArgument
-typeArg = tok Op_Query >> Wildcard <$> opt wildcardBound
-    <|> ActualType <$> refType
-
-wildcardBound :: P WildcardBound
-wildcardBound = tok KW_Extends >> ExtendsBound <$> refType
-    <|> tok KW_Super >> SuperBound <$> refType
-
-refTypeArgs :: P [RefType]
-refTypeArgs = angles refTypeList
-
-----------------------------------------------------------------------------
--- Names
-
-name :: P Name
-name = Name <$> seplist1 ident period
-
-ident :: P Ident
-ident = javaToken $ \t -> case t of
-    IdentTok s -> Just $ Ident s
-    _ -> Nothing
-
-------------------------------------------------------------
-
-empty :: P ()
-empty = return ()
-
-opt :: P a -> P (Maybe a)
-opt = optionMaybe
-
-bopt :: P a -> P Bool
-bopt p = opt p >>= \ma -> return $ isJust ma
-
-lopt :: P [a] -> P [a]
-lopt p = do mas <- opt p
-            case mas of
-             Nothing -> return []
-             Just as -> return as
-
-list :: P a -> P [a]
-list = option [] . list1
-
-list1 :: P a -> P [a]
-list1 = many1
-
-seplist :: P a -> P sep -> P [a]
---seplist = sepBy
-seplist p sep = option [] $ seplist1 p sep
-
-seplist1 :: P a -> P sep -> P [a]
---seplist1 = sepBy1
-seplist1 p sep =
-    p >>= \a ->
-        try (do sep
-                as <- seplist1 p sep
-                return (a:as))
-        <|> return [a]
-
-startSuff, (|>>) :: P a -> P (a -> a) -> P a
-startSuff start suffix = do
-    x <- start
-    ss <- list suffix
-    return $ foldl (\a s -> s a) x ss
-
-(|>>) = startSuff
-
-------------------------------------------------------------
-
-javaToken :: (Token -> Maybe a) -> P a
-javaToken test = token showT posT testT
-  where showT (L _ t) = show t
-        posT  (L p _) = pos2sourcePos p
-        testT (L _ t) = test t
-
-tok, matchToken :: Token -> P ()
-tok = matchToken
-matchToken t = javaToken (\r -> if r == t then Just () else Nothing)
-
-pos2sourcePos :: (Int, Int) -> SourcePos
-pos2sourcePos (l,c) = newPos "" l c
-
-type Mod a = [Modifier] -> a
-
-parens, braces, brackets, angles :: P a -> P a
-parens   = between (tok OpenParen)  (tok CloseParen)
-braces   = between (tok OpenCurly)  (tok CloseCurly)
-brackets = between (tok OpenSquare) (tok CloseSquare)
-angles   = between (tok Op_LThan)   (tok Op_GThan)
-
-endSemi :: P a -> P a
-endSemi p = p >>= \a -> semiColon >> return a
-
-comma, colon, semiColon, period :: P ()
-comma     = tok Comma
-colon     = tok Op_Colon
-semiColon = tok SemiColon
-period    = tok Period
-
-------------------------------------------------------------
+Block :: { Block }
+Block : braces(many(BlockStmt)) { Block $1 }
+
+BlockStmt :: { BlockStmt }
+BlockStmt
+    : Modifiers ModifiedDecl { ($2 $1) }
+    | Stmt                   { BlockStmt $1 }
+
+ModifiedDecl :: { [Modifier] -> BlockStmt }
+ModifiedDecl
+    : ClassDecl         { \m -> LocalClass m $1 }
+    | LocalVarDecl ';'  { \m -> uncurry (LocalVars m) $1 }
+
+IfCont :: { Exp -> Stmt }
+IfCont
+    : Stmt                  { \cond -> IfThen cond $1 }
+    | StmtNSI else ElseCont { \cond -> IfThenElse cond $1 $3 }
+
+ElseCont :: { Stmt }
+ElseCont
+    : StmtNSI   { $1 }
+    | Stmt      { $1 }
+
+StmtExpList :: { [Stmt] }
+StmtExpList
+    : many_sep(StmtExp, ',') { $1 }
+
+ForHeader :: { Stmt }
+ForHeader
+    : Modifiers Type ident ':' Exp  { EnhancedFor $1 $2 $3 $5 }
+    | ForInit ';' Exp ';' ForUpdate { BasicFor $1 $3 $5 }
+
+whileStmt(stmt)
+    : while parens(Exp) stmt { While $2 $3 }
+
+forStmt(stmt)
+    : for parens(ForHeader) stmt { $2 $3 }
+
+Ident :: { Ident }
+    : ident { Ident $1 }
+
+labeled(stmt)
+    : Ident ':' stmt { Labeled $1 $3 }
+
+Stmt :: { Stmt }
+Stmt
+    : if parens(Exp) IfCont      { $3 $2 }
+    | whileStmt(Stmt)            { $1 }
+    | forStmt(Stmt)              { $1 }
+    | labeled(Stmt)              { $1 }
+    | StmtNoTrail                { $1 }
+
+StmtNSI :: { Stmt }
+StmtNSI
+    : if parens(Exp) StmtNSI else StmtNSI { IfThenElse $2 $3 $5 }
+    | whileStmt(StmtNSI)                  { $1 }
+    | forStmt(StmtNSI)                    { $1 }
+    | labeled(StmtNSI)                    { $1 }
+    | StmtNoTrail                         { $1 }
+
+AssertCont :: { Maybe Exp }
+AssertCont
+    : ':' Exp { Just $2 }
+    |         { Nothing }
+
+TryCont :: { Stmt }
+TryCont
+    : many1(Catch) opt(Finally) { Try $1 $2 }
+    | Finally { Try [] $1 }
+
+Finally :: { Block }
+Finally
+    : finally Block { $2 }
+
+StmtNoTrail :: { Stmt }
+    : ';'                                         { Empty }
+    | Block                                       { StmtBlock $1 }
+    | assert Exp AssertCont ';'                   { Assert $2 $3 }
+    | switch parens(Exp) braces(many(SwitchStmt)) { Switch $2 $3 }
+    | do Stmt while parens(Exp) ';'               { Do $2 $4 }
+    | break opt(ident) ';'                        { Break $2 }
+    | continue opt(ident) ';'                     { Continue $2 }
+    | return opt(Exp) ';'                         { Return $2 }
+    | synchronized parens(Exp) Block              { Synchronized $2 $3 }
+    | throw Exp ';'                               { Throw $2 }
+    | try Block TryCont                           { $3 $2 }
+    | StmtExp ';'                                 { $1 }
+
+ForInit :: { ForInit }
+    : Modifiers LocalVarDecl { uncurry (ForLocalVars $1) $2 }
+    | many_sep(StmtExp, ',') { ForInitExps $1 }
+
+ForUpdate :: { [Exp] }
+    : many_sep(StmtExp, ',') { $1 }
+
+SwitchStmt :: { SwitchBlock }
+    : SwitchLabel ':' many(BlockStmt) { SwitchBlock $1 $2 }
+
+SwitchLabel :: { SwitchLabel }
+    : default { Default }
+    | Exp     { SwitchCase }
+
+Catch :: { Catch }
+    : catch parens(FormalParam) Block { Catch $2 $3 }
+
+StmtExp :: { Exp }
+    : InstanceCreationExp { $1 }
+    | MethodInvocation { $1 }
+    | UnaryExp         { $1 }
+
+Assignment :: { Stmt }
+    : Lhs AssignOp Exp { Assign $1 $2 $3 }
+
+AssignOp :: { AssignOp }
+    : '=' { EqualA }
+    | '*=' { MultT }
+    | '/=' { DivA }
+    | '%=' { RemA }
+    | '+=' { AddA }
+    | '-=' { SubA }
+    | '<<=' { LShiftA }
+    | '>>=' { RshiftA }
+    | '>>>=' { RRShiftA }
+    | '&=' { AndA }
+    | '|=' { XorA }
+
+Lhs :: { Lhs }
+Lhs
+    : FieldAccess   { FieldLhs $1 }
+    | ArrayIndex    { ArrayLhs $1 }
+    | ident         { NameLhs $1 }
+
+LamExp :: { Exp }
+LamExp
+    : LambdaParams '->' or(Exp, Block) { Lambda $1 (either LambdaExpression LambdaBlock $2) }
+
+LambdaParams :: { LambdaParams }
+LambdaParams
+    : ident { LambdaSingleParam $1 }
+    | parens(or(many_sep(ident, ','), FormalParams0))
+        { either LambdaInferredParams LambdaFormalParams $1 }
+
+ArrayIndex :: { ArrayIndex }
+ArrayIndex
+    : or(PrimaryNoArr, ExpName) many1(brackets(Exp)) { ArrayIndex (either id id $1) $2 }
+
+Exp :: { Exp }
+Exp : LamExp    { $1 }
+    | Assignment { $1 }
+    | Exp '?' Exp ':' Exp { Cond $1 $3 $5 }
+    | Exp BinOp Exp { BinOp $1 $2 $3 }
+
+BinOp :: { Op }
+BinOp
+    : '||' { Or }
+    | '&&' { And }
+    | '|'  { COr }
+    | '^'  { Xor }
+    | '&'  { CAnd }
+    | '==' { Equal }
+    | '!=' { NotEq }
+    | '*'  { Mult }
+    | '+'  { Add }
+    | '-'  { Sub }
+    | '/'  { Div }
+    | '%'  { Rem }
+    | '<'  { LThan }
+    | '>'  { GTan }
+    | '>=' { GTanE }
+    | '<=' { LTanE }
+    | '>' '>' { RShift }
+    | '<<' { LShift }
+    | '>' '>' '>' { RRShift }
+
+UnaryExp :: { Exp }
+UnaryExp
+    : '+' UnaryExp %prec UNARY  { PrePlus $2 }
+    | '-' UnaryExp %prec UNARY  { PreMinus $2 }
+    | '++' UnaryExp %prec UNARY { PreIncrement $2 }
+    | '--' UnaryExp %prec UNARY { PreDecrement $2 }
+    | PostIncExp                { $1 }
+    | PostDecExp                { $1 }
+    | '~' UnaryExp              { PreBitCompl $2 }
+    | '!' UnaryExp              { PreNot $2 }
+    | PostfixExp                { $1 }
+    | CastExp                   { $1 }
+
+CastExp :: { Exp }
+CastExp
+    : '(' Type opt(AdditionalBound) ')' or(UnaryExp, LamExp)
+        { if isJust $3 then error "Additional bounds not implemented" else Cast $2 (either id id $5) }
+
+AdditionalBound :: { Type }
+AdditionalBound
+    : '&' ClassType { $2 }
+
+PostIncExp :: { Exp }
+PostIncExp
+    : UnaryExp '++' %prec UNARY { PostIncrement $1 }
+
+PostDecExp :: { Exp }
+PostDecExp
+    : UnaryExp '--' %prec UNARY { PostDecrement $1 }
+
+PostfixExp :: { Exp }
+PostfixExp
+    : Primary { $1 }
+    | ExpName { $1 }
+    | PostIncExp { $1 }
+    | PostDecExp { $1 }
+
+Primary :: { Exp }
+Primary
+    : PrimaryNoArr { $1 }
+    | ArrayCreation { ArrayCreate $1 }
+
+ArrayCreation :: { Exp }
+ArrayCreation
+    : Type DimsOrInit { $2 $1 }
+
+DimsOrInit :: { Type -> Exp }
+DimsOrInit
+    : dims(Exp) opt(dims(Empty)) { \t -> ArrayCreate t $1 (maybe 1 length $2) }
+    | dims(Empty) ArrayInit { \t -> ArrayCreateInit t (length $1) $2 }
+
+dims(exp)
+    : many1(annotated(brackets(exp))) { $1 }
+
+annotated(p)
+    : many(Annotation) p { ($1, $2) }
+
+PrimaryNoArr :: { Exp }
+PrimaryNoArr
+    : Lit   { Lit $1 }
+    | ClassLitTarget '.' class { ClassLit $1 }
+    | this { This }
+    | TypeName '.' this { ThisClass $1 }
+    | '(' Exp ')' { $1 }
+    | InstanceCreationExp { InstanceCreation $1 }
+    | FieldAccess { $1 }
+    | ArrayIndex  { $1 }
+    | MethodInvocation { $1 }
+    | MethodRefTarget '::' opt(TypeArgs) or(ident, new)
+        { MethodRef $1 (fromMaybe [] $3 ) (either Just (const Nothing) $4) }
+
+MethodInvocation :: { Exp }
+MethodInvocation
+    : ident Args { MethodCall $1 $2 }
+    | MethodSelect '.' opt(TypeArgs) ident Args { $1 (fromMaybe [] $2 ) $3 $4 }
+
+MethodSelect :: { MethodInvocation }
+MethodSelect
+    : Primary { PrimaryMethodCall $1 }
+    | super   { SuperMethodCall }
+    | TypeName '.' super { ClassMethodCall $1 }
+    | TypeName { TypeMethodCall $1 }
+
+ClassLitTarget :: { Type }
+ClassLitTarget
+    : void { PrimType VoidT }
+    | ClassLitTarget0 opt(brackets(Empty))
+      { if isJust $2
+          then $1
+          else RefType $ ArrayType $1
+      }
+
+ClassLitTarget0 :: { Type }
+ClassLitTarget0
+    : PrimType { PrimType $1 }
+    | TypeName { RefType $ ClassRefType $ ClassType $ map (,[]) $ $1 }
+
+TypeName :: { Name }
+TypeName : ExpName { $1 }
+
+FieldAccess :: { FieldAccess }
+FieldAccess
+    : FieldAccessPrefix '.' Ident { $1 $3 }
+    | Ident                       { ClassFieldAccess Nothing $1 }
+
+FieldAccessPrefix :: { Ident -> FieldAccess }
+FieldAccessPrefix
+    : Ident   { ClassFieldAccess (Just $1 ) }
+    | Primary { PrimaryFieldAccess $1 }
+    | super { SuperFieldAccess Nothing }
+    | ExpName '.' super { SuperFieldAccess (Just $1) }
+
+MethodRefTarget :: { MethodRefTarget }
+MethodRefTarget
+    : super               { SuperTarget Nothing }
+    | ClassType '.' super { SuperTarget (Just $ RefType $ ClassRefType $1) }
+    | ClassType           { TypeTarget $ RefType $ ClassRefType $1 }
+
+Lit :: { Literal }
+Lit
+    : IntVal    { Int $1 }
+    | LongVal   { Int $1 }
+    | DoubleVal { Double $1 }
+    | FloatVal  { Float $1 }
+    | DoubleVal { Double $1 }
+    | CharVal   { Char $1 }
+    | StringVal { String $1 }
+    | BoolVal   { Boolean $1 }
+    | null      { Null }
+
+InstanceCreationExp :: { Exp }
+InstanceCreationExp
+    : ExpName '.' UnqualInstanceCreationExp { notImplemented }
+    | Primary '.' UnqualInstanceCreationExp { notImplemented }
+    | UnqualInstanceCreationExp { $1 }
+
+UnqualInstanceCreationExp :: { Exp }
+UnqualInstanceCreationExp
+    : new opt(TypeArgs) TypeToInstantiate parens(many_sep(Exp, ',')) opt(ClassBody)
+        { InstanceCreation (fromMaybe [] $2) $3 $4 $5 }
+
+ClassType :: { ClassType }
+ClassType
+    : many_sep1(AnnParamIdent, '.') { ClassType $1 }
+
+-- Currently just ignores the annotations, because the AST does not support it FIXIT!
+AnnParamIdent :: { (Ident, [TypeParam]) }
+AnnParamIdent
+    : many(Annotation) ident OptTypeParams { ($2, fromMaybe [] $3) }
+
+-- TODO check that there are not simultaneously typearguments and a diamond
+TypeToInstantiate :: { TypeDeclSpecifier }
+TypeToInstantiate
+    : ClassType opt(Diamond) { TypeDeclSpecifier $1 (isJust $2) }
+
+Diamond :: { () }
+Diamond
+    : '<' '>'   { () }
+
+{
+
+
+parseError :: Token -> Alex a
+parseError tok = do
+    loc <- getPosition
+    error $ "Parse error at location " ++ show loc ++ " (token " ++ show tok ++ ")"
 
 test = "public class Foo { }"
 testFile file = do
   i <- readFile file
-  let r = parseCompilationUnit i
+  let r = compilationUnit i
   putStrLn$ either (("Parsing error:\n"++) . show) (show . pretty) r
+
+notImplemented :: a
+notImplemented = error "Not implemented"
+
+}

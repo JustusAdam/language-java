@@ -365,8 +365,13 @@ instance Pretty Exp where
   prettyPrec p (Lambda params body) =
     prettyPrec p params <+> text "->" <+> prettyPrec p body
 
-  prettyPrec p (MethodRef i1 i2) =
-    prettyPrec p i1 <+> text "::" <+> maybe (text "new") (prettyPrec p) i2
+  prettyPrec p (MethodRef i1 ta i2) =
+    prettyPrec p i1 <> text "::" <> ppTypeParams p ta <> maybe (text "new") (prettyPrec p) i2
+
+instance Pretty MethodRefTarget where
+  prettyPrec p (TypeTarget t) = prettyPrec p t
+  prettyPrec p (SuperTarget mt) = maybe empty (\t -> prettyPrec p t <> text ".") mt <> text "super"
+
 
 instance Pretty LambdaParams where
   prettyPrec p (LambdaSingleParam ident) = prettyPrec p ident
@@ -435,10 +440,11 @@ instance Pretty ArrayIndex where
 instance Pretty FieldAccess where
   prettyPrec p (PrimaryFieldAccess e ident) =
     prettyPrec p e <> char '.' <> prettyPrec p ident
-  prettyPrec p (SuperFieldAccess ident) =
+  prettyPrec p (SuperFieldAccess name ident) =
+    maybe empty (\t -> prettyPrec p t <> text ".") name <>
     text "super." <> prettyPrec p ident
   prettyPrec p (ClassFieldAccess name ident) =
-    prettyPrec p name <> text "." <> prettyPrec p ident
+    maybe empty (\t -> prettyPrec p t <> text ".") name <> prettyPrec p ident
 
 instance Pretty MethodInvocation where
   prettyPrec p (MethodCall name args) =
@@ -490,12 +496,7 @@ instance Pretty TypeArgument where
   prettyPrec p (Wildcard mBound) = char '?' <+> maybePP p mBound
 
 instance Pretty TypeDeclSpecifier where
-  prettyPrec p (TypeDeclSpecifier ct) = prettyPrec p ct
-  prettyPrec p (TypeDeclSpecifierWithDiamond ct i d) =  prettyPrec p ct <> char '.' <> prettyPrec p i <> prettyPrec p d
-  prettyPrec p (TypeDeclSpecifierUnqualifiedWithDiamond i d) = prettyPrec p i <> prettyPrec p d
-
-instance Pretty Diamond where
-  prettyPrec p Diamond = text "<>"
+  prettyPrec p (TypeDeclSpecifier ct withDiamond) = prettyPrec p ct <> if withDiamond then text "<>" else mempty
 
 instance Pretty WildcardBound where
   prettyPrec p (ExtendsBound rt) = text "extends" <+> prettyPrec p rt
