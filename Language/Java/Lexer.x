@@ -1,7 +1,7 @@
 {
 {-# LANGUAGE BangPatterns #-}
 {-# OPTIONS_GHC -fno-warn-tabs -fno-warn-unused-binds #-}
-module Language.Java.Lexer (Alex, getPosition, Token(..), lexer) where
+module Language.Java.Lexer (LexerM, runLexerM, getPosition, Token(..), lexer) where
 
 import Numeric
 import Data.Char
@@ -172,6 +172,8 @@ tokens  :-
 
 
 {
+
+type LexerM = Alex
 
 direct tok = only (pure tok)
 
@@ -375,10 +377,13 @@ data Token
     | EOF
   deriving (Show, Eq)
 
-lexer :: Alex Token
-lexer = alexMonadScan
+lexer :: (Token -> LexerM a) -> LexerM a
+lexer cont = alexMonadScan >>= cont
 
-getPosition :: Alex (Int, Int)
+getPosition :: LexerM (Int, Int)
 getPosition = Alex $ \s -> pure (s, let AlexPn _ line col = alex_pos s in (line, col))
+
+runLexerM :: BS.ByteString -> LexerM a -> Either String a
+runLexerM = runAlex
 
 }

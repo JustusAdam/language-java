@@ -9,8 +9,15 @@ Synopsis:               Java source manipulation
 Description:            Manipulating Java source: abstract syntax, lexer, parser, and pretty-printer.
 Homepage:               http://github.com/vincenthz/language-java
 Stability:              Experimental
-Build-Type:             Simple
+Build-Type:             Custom
 Cabal-Version:          >= 1.8
+custom-setup:
+    setup-depends:
+      base,
+      cabal,
+      directory,
+      filepath,
+      process
 
 Extra-Source-Files:
     tests/java/good/*.java

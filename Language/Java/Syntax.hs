@@ -635,8 +635,7 @@ type MethodInvocation = MethodInvocationA ()
 
 -- | An array initializer may be specified in a declaration, or as part of an array creation expression, creating an
 --   array and providing some initial values
-data ArrayInitA a
-    = ArrayInitA [VarInitA a]
+newtype ArrayInitA a = ArrayInitA [VarInitA a]
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
 
 unfunctor ''ArrayInitA
