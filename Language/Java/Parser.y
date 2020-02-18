@@ -2,14 +2,14 @@
 {-# LANGUAGE TupleSections #-}
 module Language.Java.Parser (
     compilationUnit
-
+    , parser
     ) where
 
 import Language.Java.Lexer ( LexerM, getPosition, Token(..), lexer, runLexerM)
 import Language.Java.Syntax
 import Language.Java.Pretty (pretty)
 import Data.Maybe (isJust, fromMaybe, catMaybes)
-import qualified Data.ByteString.Lazy as BS
+import qualified Data.ByteString.Lazy.Char8 as BS
 
 }
 
@@ -165,15 +165,16 @@ braces(p) : '{' p '}' { $2 }
 parens(p) : '(' p ')' { $2 }
 brackets(p) : '[' p ']' { $2 }
 
-many(p) : many(p) p { $1 ++ [$2] }
-        |           { [] }
+many(p) : many1(p) { $1 }
+        |          { [] }
 
 many1(p)
-    : many(p) p   { $1 ++ [$2] }
+    : many1(p) p   { $1 ++ [$2] }
+    | p            { [$1] }
 
 many_sep1(p, sep)
-    : many_sep(p, sep) sep p { $1 ++ [$3] }
-    | p                      { [$1] }
+    : many_sep1(p, sep) sep p { $1 ++ [$3] }
+    | p                       { [$1] }
 
 many_sep(p, sep)
     : many_sep1(p, sep) { $1 }
@@ -186,12 +187,13 @@ CompilationUnit :: { CompilationUnitA () }
 PackageDecl :: { PackageDecl }
     : package Name ';' { PackageDecl $2 }
 
-WildcardSuffix :: { () }
-    : '.' '*' { () }
+IsWildcard :: { Bool }
+    : '.' '*' { True }
+    |         { False }
 
 ImportDecl :: { ImportDecl }
-    : import opt(static) Name opt(WildcardSuffix) ';'
-        { ImportDecl (isJust $2) $3 (isJust $4) }
+    : import opt(static) Name IsWildcard ';'
+        { ImportDecl (isJust $2) $3 $4 }
 
 QualIdent :: { [Ident] }
     : many_sep1(Ident, '.') { $1 }
@@ -226,20 +228,29 @@ ClassDecl :: { [Modifier] -> ClassDecl }
     | EnumClassDecl   { $1 }
 
 NormalClassDecl :: { [Modifier] -> ClassDecl }
-    : class Ident OptTypeParams opt(Extends) opt(Implements) ClassBody
-         { \ms -> ClassDecl ms $2 $3 $4 (fromMaybe [] $5) $6 }
+    : class Ident OptTypeParams Extends Implements ClassBody
+         { \ms -> ClassDecl ms $2 $3 $4 $5 $6 }
 
 ClassBody :: { ClassBody }
-    : braces(many(ClassBodyDecl)) { $1 }
+    : braces(many(ClassBodyDecl)) { ClassBody $1 }
 
-Extends :: { RefType }
-    : extends RefType { $2 }
+Extends :: { Maybe RefType }
+    : extends RefType { Just $2 }
+    |                 { Nothing }
+
+InterfaceExtends :: { [RefType] }
+    : extends ImplOrExtList  { $2 }
+    |                        { [] }
+
+ImplOrExtList :: { [RefType] }
+    : many_sep1(RefType, ',') { $1 }
 
 Implements :: { [RefType] }
-    : implements many_sep1(ClassType, ',') { $2 }
+    : implements ImplOrExtList { $2 }
+    |                          { [] }
 
 EnumClassDecl :: { [Modifier] -> ClassDecl }
-    : enum Ident opt(Implements) braces(EnumBody)
+    : enum Ident Implements braces(EnumBody)
         { \ms -> EnumDecl ms $2 $3 $4 }
 
 EnumBody :: { EnumBody }
@@ -250,7 +261,7 @@ EnumConstant :: { EnumConstant }
     : Ident opt(Args) opt(braces(ClassBody)) { EnumConstant $1 (fromMaybe [] $2 ) $3 }
 
 InterfaceDecl :: { [Modifier] -> InterfaceDecl }
-    : Interface Ident OptTypeParams opt(Extends) many(InterfaceBodyDecl)
+    : Interface Ident OptTypeParams InterfaceExtends braces(many(InterfaceBodyDecl))
         { \ms -> InterfaceDecl $1 ms $2 $3 $4 (InterfaceBody $5) }
 
 Interface :: { InterfaceKind }
@@ -272,16 +283,18 @@ FieldDecl :: { [Modifier] -> MemberDecl }
     : Type VarDecls ';' { \ms -> FieldDecl ms $1 $2 }
 
 OptTypeParams :: { [TypeParam] }
-    : opt(TypeParams) { fromMaybe [] $1 }
+    : TypeParams { $1 }
+    |            { [] }
 
 TypeParams :: { [TypeParam] }
     : '<' many_sep(TypeParam, ',') '>' { $2 }
 
 TypeParam :: { TypeParam }
-    : Ident opt(Bounds) { TypeParam $1 (fromMaybe [] $2) }
+    : Ident Bounds { TypeParam $1 $2 }
 
-Bounds :: { [Type] }
+Bounds :: { [RefType] }
     : extends many_sep1(RefType, '&') { $2 }
+    |                                 { [] }
 
 Name :: { Name }
     : QualIdent { Name $1 }
@@ -291,7 +304,7 @@ ExpName :: { Exp }
 
 MethodDecl :: { [Modifier] -> MemberDecl }
     : OptTypeParams ResultType Ident FormalParams OptThrowDecl MethodBody
-        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 None (MethodBody $6 ) }
+        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 Nothing (MethodBody $6 ) }
 
 ResultType :: { Maybe Type }
     : void  { Nothing }
@@ -310,13 +323,14 @@ ConstrBody :: { ConstructorBody }
         { ConstructorBody $1 $2 }
 
 ExplConstrInv :: { ExplConstrInv }
-    : Primary '.' opt(RefTypeArgs) super Args
-        { PrimarySuperInvoke $1 (fromMaybe [] $3 ) $5 }
-    | opt(RefTypeArgs) ConstrInvTarget Args
-        { $2 (fromMaybe [] $1 ) $3 }
+    : Primary '.' RefTypeArgs super Args
+        { PrimarySuperInvoke $1 $3 $5 }
+    | RefTypeArgs ConstrInvTarget Args
+        { $2 $1 $3 }
 
 RefTypeArgs :: { [RefType] }
     : '<' many_sep(RefType, ',') '>' { $2 }
+    |                                { [] }
 
 ConstrInvTarget :: { [RefType] -> [Argument] -> ExplConstrInv }
     : super { SuperInvoke }
@@ -324,13 +338,15 @@ ConstrInvTarget :: { [RefType] -> [Argument] -> ExplConstrInv }
 
 TypeArgs :: { [TypeArgument] }
     : '<' many_sep(TypeArg, ',') '>' { $2 }
+    |                                { [] }
 
 TypeArg :: { TypeArgument }
-    : '?' opt(WildcardBound) { Wildcard $2 }
+    : '?' WildcardBound      { Wildcard $2 }
     | RefType                { ActualType $1 }
 
-WildcardBound :: { WildcardBound }
-    : WildcardBoundType RefType { $1 $2 }
+WildcardBound :: { Maybe WildcardBound }
+    : WildcardBoundType RefType { Just ($1 $2) }
+    |                           { Nothing }
 
 WildcardBoundType :: { RefType -> WildcardBound }
     : super   { SuperBound }
@@ -349,15 +365,12 @@ InterfaceMemberDecl :: { [Modifier] -> MemberDecl }
     | AbsMethodDecl { $1 }
 
 AbsMethodDecl :: { [Modifier] -> MemberDecl }
-    : OptTypeParams ResultType Ident FormalParams OptThrowDecl opt(DefaultValue) ';'
-        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 (fromMaybe None $6) (MethodBody Nothing) }
+    : OptTypeParams ResultType Ident FormalParams OptThrowDecl DefaultValue ';'
+        { \ms -> MethodDecl ms $1 $2 $3 $4 $5 $6 (MethodBody Nothing) }
 
 DefaultValue :: { DefaultValue }
-    : default DefaultVal { $2 }
-
-DefaultVal
-    : braces(many_sep(Exp, ',')) { Array $1 }
-    | Exp                        { Single $1 }
+    : default VarInit { Just $2 }
+    |                 { Nothing }
 
 OptThrowDecl :: { [RefType] }
     : opt(ThrowDecl) { fromMaybe [] $1 }
@@ -366,7 +379,7 @@ ThrowDecl :: { [RefType] }
     : throws many_sep(RefType, ',') { $2 }
 
 FormalParams :: { [FormalParam] }
-    : parens(FormalParams0) { $1 }
+    : parens(opt(FormalParams0)) { fromMaybe [] $1 }
 
 FormalParams0 :: { [FormalParam] }
     : FormalParam ',' FormalParams0 { $1 : $3 }
@@ -428,12 +441,8 @@ AnnotationArg :: { (Ident, ElementValue) }
     : Ident '=' ElementVal { ($1, $3) }
 
 ElementVal :: { ElementValue }
-    : InitExp    { EVVal $1 }
+    : VarInit    { EVVal $1 }
     | Annotation { EVAnn $1 }
-
-InitExp :: { VarInit }
-    : ArrayInit { InitArray $1 }
-    | Exp       { InitExp $1 }
 
 ArrayInit :: { ArrayInit }
     : braces(many_sep(VarInit, ',')) { ArrayInit $1 }
@@ -442,10 +451,11 @@ VarDecls :: { [VarDecl] }
     : many_sep(VarDecl, ',') { $1 }
 
 VarDecl :: { VarDecl }
-    : VarDeclId opt(VarInitAssign) { VarDecl $1 $2 }
+    : VarDeclId VarInitAssign { VarDecl $1 $2 }
 
-VarInitAssign :: { VarInit }
-    : '=' VarInit { $2 }
+VarInitAssign :: { Maybe VarInit }
+    : '=' VarInit { Just $2 }
+    |             { Nothing }
 
 VarDeclId :: { VarDeclId }
     : Ident many(brackets(Empty)) { foldl (\f _ -> VarDeclArray . f) VarId $2 $1 }
@@ -471,14 +481,7 @@ ModifiedDecl :: { [Modifier] -> BlockStmt }
 
 IfCont :: { Exp -> Stmt }
     : Stmt                  { \cond -> IfThen cond $1 }
-    | StmtNSI else ElseCont { \cond -> IfThenElse cond $1 $3 }
-
-ElseCont :: { Stmt }
-    : StmtNSI   { $1 }
-    | Stmt      { $1 }
-
-StmtExpList :: { [Stmt] }
-    : many_sep(StmtExp, ',') { $1 }
+    | StmtNSI else Stmt     { \cond -> IfThenElse cond $1 $3 }
 
 ForHeader :: { Stmt -> Stmt }
     : Modifiers Type Ident ':' Exp  { EnhancedFor $1 $2 $3 $5 }
@@ -543,7 +546,7 @@ ForUpdate :: { [Exp] }
     : many_sep(StmtExp, ',') { $1 }
 
 SwitchStmt :: { SwitchBlock }
-    : SwitchLabel ':' many(BlockStmt) { SwitchBlock $1 $3 }
+    : case SwitchLabel ':' many(BlockStmt) { SwitchBlock $2 $4 }
 
 SwitchLabel :: { SwitchLabel }
     : default { Default }
@@ -555,7 +558,8 @@ Catch :: { Catch }
 StmtExp :: { Exp }
     : InstanceCreationExp { $1 }
     | MethodInvocation { MethodInv $1 }
-    | UnaryExp         { $1 }
+    | IncDecExps       { $1 }
+    | Assignment       { $1 }
 
 Assignment :: { Exp }
     : Lhs AssignOp Exp { Assign $1 $2 $3 }
@@ -571,20 +575,24 @@ AssignOp :: { AssignOp }
     | '>>=' { RShiftA }
     | '>>>=' { RRShiftA }
     | '&=' { AndA }
-    | '|=' { XorA }
+    | '|=' { OrA }
+    | '^=' { XorA }
 
 Lhs :: { Lhs }
-    : FieldAccess   { FieldLhs $1 }
-    | ArrayIndex    { ArrayLhs $1 }
-    | Name          { NameLhs $1 }
+    : FieldAccess { FieldLhs $1 }
+    | ArrayIndex  { ArrayLhs $1 }
+    | Ident       { NameLhs (Name [$1]) }
 
 LamExp :: { Exp }
     : LambdaParams '->' or(Exp, Block) { Lambda $1 (either LambdaExpression LambdaBlock $3) }
 
 LambdaParams :: { LambdaParams }
     : Ident { LambdaSingleParam $1 }
-    | parens(or(many_sep(Ident, ','), FormalParams0))
-        { either LambdaInferredParams LambdaFormalParams $1 }
+    | parens(LambdaParenArgs) { $1 }
+
+LambdaParenArgs
+    : many_sep1(Ident, ',') { LambdaInferredParams $1 }
+    | FormalParams0         { LambdaFormalParams $1 }
 
 ArrayIndex :: { ArrayIndex }
     : or(PrimaryNoArr, ExpName) many1(brackets(Exp)) { ArrayIndex (either id id $1) $2 }
@@ -594,6 +602,7 @@ Exp :: { Exp }
     | Assignment { $1 }
     | Exp '?' Exp ':' Exp { Cond $1 $3 $5 }
     | Exp BinOp Exp { BinOp $1 $2 $3 }
+    | Exp instanceof RefType { InstanceOf $1 $3 }
 
 BinOp :: { Op }
     : '||' { Or }
@@ -619,14 +628,19 @@ BinOp :: { Op }
 UnaryExp :: { Exp }
     : '+' UnaryExp %prec UNARY  { PrePlus $2 }
     | '-' UnaryExp %prec UNARY  { PreMinus $2 }
-    | '++' UnaryExp %prec UNARY { PreIncrement $2 }
-    | '--' UnaryExp %prec UNARY { PreDecrement $2 }
-    | PostIncExp                { $1 }
-    | PostDecExp                { $1 }
     | '~' UnaryExp              { PreBitCompl $2 }
     | '!' UnaryExp              { PreNot $2 }
     | PostfixExp                { $1 }
     | CastExp                   { $1 }
+    | PreIncDecExps             { $1 }
+
+IncDecExps :: { Exp }
+    : PostIncExp                { $1 }
+    | PostDecExp                { $1 }
+
+PreIncDecExps :: { Exp }
+    : '++' UnaryExp %prec UNARY { PreIncrement $2 }
+    | '--' UnaryExp %prec UNARY { PreDecrement $2 }
 
 CastExp :: { Exp }
     : '(' Type opt(AdditionalBound) ')' or(UnaryExp, LamExp)
@@ -654,9 +668,10 @@ Primary :: { Exp }
 ArrayCreation :: { Exp }
     : Type DimsOrInit { $2 $1 }
 
+-- HAZARD: This discards annotations on array bounds expressions
 DimsOrInit :: { Type -> Exp }
-    : dims(Exp) opt(dims(Empty)) { \t -> ArrayCreate t $1 (maybe 1 length $2) }
-    | dims(Empty) braces(many_sep(Exp, ',')) { \t -> ArrayCreateInit t (length $1) $2 }
+    : dims(Exp) opt(dims(Empty)) { \t -> ArrayCreate t (map snd $1 ) (maybe 1 length $2) }
+    | dims(Empty) ArrayInit { \t -> ArrayCreateInit t (length $1) $2 }
 
 dims(exp)
     : many1(annotated(brackets(exp))) { $1 }
@@ -674,12 +689,12 @@ PrimaryNoArr :: { Exp }
     | FieldAccess { FieldAccess $1 }
     | ArrayIndex  { ArrayAccess $1 }
     | MethodInvocation { MethodInv $1 }
-    | MethodRefTarget '::' opt(TypeArgs) or(Ident, new)
-        { MethodRef $1 (fromMaybe [] $3 ) (either Just (const Nothing) $4) }
+    | MethodRefTarget '::' TypeArgs or(Ident, new)
+        { MethodRef $1 $3 (either Just (const Nothing) $4) }
 
 MethodInvocation :: { MethodInvocation }
     : Name Args { MethodCall $1 $2 }
-    | MethodSelect '.' opt(TypeArgs) Ident Args { $1 (fromMaybe [] $3 ) $4 $5 }
+    | MethodSelect '.' RefTypeArgs Ident Args { $1 $3 $4 $5 }
 
 MethodSelect :: { [RefType] -> Ident -> [Argument] -> MethodInvocation }
     : Primary { PrimaryMethodCall $1 }
@@ -697,20 +712,20 @@ ClassLitTarget :: { Maybe Type }
 
 ClassLitTarget0 :: { Type }
     : PrimType { PrimType $1 }
-    | QualIdent { RefType $ ClassRefType $ ClassType $ map (,[]) $1 }
+    | Name { let Name n = $1 in RefType $ ClassRefType $ ClassType $ map (,[]) n }
 
 TypeName :: { Name }
     : Name { $1 }
 
 FieldAccess :: { FieldAccess }
     : FieldAccessPrefix '.' Ident { $1 $3 }
-    | Ident                       { ClassFieldAccess Nothing $1 }
 
 FieldAccessPrefix :: { Ident -> FieldAccess }
     : Name              { ClassFieldAccess (Just $1 ) }
     | Primary           { PrimaryFieldAccess $1 }
     | super             { SuperFieldAccess Nothing }
     | Name '.' super    { SuperFieldAccess (Just $1) }
+    | this              { ClassFieldAccess Nothing }
 
 MethodRefTarget :: { MethodRefTarget }
     : super               { SuperTarget Nothing }
@@ -722,7 +737,6 @@ Lit :: { Literal }
     | LongVal   { Int $1 }
     | DoubleVal { Double $1 }
     | FloatVal  { Float $1 }
-    | DoubleVal { Double $1 }
     | CharVal   { Char $1 }
     | StringVal { String $1 }
     | BoolVal   { Boolean $1 }
@@ -734,15 +748,15 @@ InstanceCreationExp :: { Exp }
     | UnqualInstanceCreationExp { $1 }
 
 UnqualInstanceCreationExp :: { Exp }
-    : new opt(TypeArgs) TypeToInstantiate parens(many_sep(Exp, ',')) opt(ClassBody)
-        { InstanceCreation (fromMaybe [] $2) $3 $4 $5 }
+    : new TypeArgs TypeToInstantiate parens(many_sep(Exp, ',')) opt(ClassBody)
+        { InstanceCreation $2 $3 $4 $5 }
 
 ClassType :: { ClassType }
     : many_sep1(AnnParamIdent, '.') { ClassType $1 }
 
 -- Currently just ignores the annotations, because the AST does not support it FIXIT!
-AnnParamIdent :: { (Ident, [TypeParam]) }
-    : many(Annotation) Ident OptTypeParams { ($2, $3) }
+AnnParamIdent :: { (Ident, [TypeArgument]) }
+    : many(Annotation) Ident TypeArgs { ($2, $3) }
 
 -- TODO check that there are not simultaneously typearguments and a diamond
 TypeToInstantiate :: { TypeDeclSpecifier }
@@ -769,5 +783,8 @@ testFile file = do
 
 notImplemented :: a
 notImplemented = error "Not implemented"
+
+parser :: ParserM a -> String -> Either String a
+parser p str = runLexerM (BS.pack str) p
 
 }

@@ -541,9 +541,7 @@ ppThrows p ets = text "throws"
     <+> hsep (punctuate comma (map (prettyPrec p) ets))
 
 ppDefault :: Int -> DefaultValue -> Doc
-ppDefault _ None = empty
-ppDefault p (Single exp) = text "default" <+> prettyPrec p exp
-ppDefault p (Array exps) = text "default" <+> braceBlock (map (prettyPrec p) exps)
+ppDefault i d = maybe empty ( prettyPrec i ) d
 
 ppResultType :: Int -> Maybe Type -> Doc
 ppResultType _ Nothing = text "void"

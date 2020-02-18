@@ -13,7 +13,7 @@ module Language.Java.Syntax
     , InterfaceKind(..)
     , DeclA(..)
     , MemberDeclA(..)
-    , DefaultValueA(..)
+    , DefaultValueA
     , VarDeclA(..)
     , VarDeclId(..)
     , VarInitA(..)
@@ -73,9 +73,6 @@ module Language.Java.Syntax
     , pattern MemberClassDecl
     , pattern MemberInterfaceDecl
     , DefaultValue
-    , pattern None
-    , pattern Single
-    , pattern Array
     , VarDecl
     , pattern VarDecl
     , VarInit
@@ -284,11 +281,8 @@ data MemberDeclA a
     | MemberInterfaceDeclA ( InterfaceDeclA a) a
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
 
-data DefaultValueA a
-    = NoneA
-    | SingleA (ExpA a)
-    | ArrayA [ExpA a]
-  deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
+type DefaultValueA a = Maybe (VarInitA a)
+type DefaultValue = DefaultValueA ()
 
 -- | A declaration of a variable, which may be explicitly initialized.
 data VarDeclA a
@@ -584,6 +578,7 @@ data LhsA a
     | FieldLhsA ( FieldAccessA a)  -- ^ Assign through a field access
     | ArrayLhsA ( ArrayIndexA a)   -- ^ Assign to an array
   deriving (Eq,Show,Read,Typeable,Generic,Data, Functor)
+-- NOTE: Perhaps `NameLhs` actually should contain an `Ident` rather than `Name`, because variables aren't never qualified
 
 -- | Array access
 data ArrayIndexA a = ArrayIndexA (ExpA a) [ExpA a] a    -- ^ Index into an array
@@ -666,4 +661,3 @@ unfunctor ''LhsA
 unfunctor ''ArrayIndexA
 unfunctor ''FieldAccessA
 unfunctor ''LambdaParamsA
-unfunctor ''DefaultValueA
